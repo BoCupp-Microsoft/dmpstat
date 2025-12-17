@@ -6,27 +6,19 @@
 
 // Helper function to validate if a value could be a valid user-mode pointer
 bool IsValidUserModePointer(UINT64 value) {
-    // Null pointer is not valid
-    if (value == 0) {
-        return false;
-    }
-    
-    // On 64-bit Windows, valid user-mode pointers are typically:
+    // On 64-bit Windows, valid user-mode pointers are:
     // - Between 0x00010000 and 0x7FFEFFFF0000 (user space)
-    // - Must be properly aligned (we're already processing 8-byte aligned values)
+    // - Must be properly aligned (we handle this by only processing 8-byte aligned values in the caller)
     
-    // Values below 64KB (0x10000) are typically invalid in user mode
     if (value < 0x10000) {
         return false;
     }
     
-    // Check if it's in valid user-mode range (up to 0x7FFEFFFF0000)
-    // Exclude kernel-mode space since these are user-mode dumps
     if (value <= 0x7FFEFFFF0000ULL) {
+        // Valid pointer path
         return true;
     }
     
-    // Values above user-mode space are not valid user-mode pointer values
     return false;
 }
 

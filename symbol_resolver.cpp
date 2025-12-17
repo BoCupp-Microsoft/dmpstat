@@ -4,7 +4,7 @@
 #include "symbol_resolver.hpp"
 
 void InitializeSymbols(const wil::unique_handle& process_handle) {
-    DWORD options = SYMOPT_CASE_INSENSITIVE | SYMOPT_UNDNAME | //SYMOPT_DEFERRED_LOADS |
+    DWORD options = SYMOPT_CASE_INSENSITIVE | SYMOPT_UNDNAME | SYMOPT_DEFERRED_LOADS |
         SYMOPT_NO_UNQUALIFIED_LOADS | SYMOPT_NO_IMAGE_SEARCH |
         SYMOPT_FAVOR_COMPRESSED | SYMOPT_DISABLE_SYMSRV_AUTODETECT |
         SYMOPT_EXACT_SYMBOLS | SYMOPT_IGNORE_CVREC | SYMOPT_NO_PROMPTS |
@@ -14,7 +14,7 @@ void InitializeSymbols(const wil::unique_handle& process_handle) {
     SymSetOptions(options);
     
     const char *symbol_path = "C:\\Symbols";
-    THROW_LAST_ERROR_IF(!SymInitialize(process_handle.get(), symbol_path, FALSE));
+    THROW_LAST_ERROR_IF(!SymInitialize(process_handle.get(), nullptr, FALSE));
 }
 
 void LoadModules(const MappedFile& mapped_file, const wil::unique_handle& process_handle) {
@@ -50,6 +50,7 @@ void LoadModules(const MappedFile& mapped_file, const wil::unique_handle& proces
         DWORD64 baseAddress = SymLoadModuleExW(
             process_handle.get(),
             nullptr,
+            // next argument should be the pdb path
             module_name.c_str(),
             nullptr,
             module.BaseOfImage,

@@ -13,11 +13,9 @@ MappedFile::MappedFile(const std::wstring& file_path) {
     ));
     THROW_LAST_ERROR_IF(!file_handle_);
         
-    // Create file mapping using WIL
     mapping_handle_.reset(CreateFileMappingW(file_handle_.get(), nullptr, PAGE_READONLY, 0, 0, nullptr));
     THROW_LAST_ERROR_IF(!mapping_handle_);
         
-    // Map view of file using WIL
     mapped_view_.reset(MapViewOfFile(mapping_handle_.get(), FILE_MAP_READ, 0, 0, 0));
     THROW_LAST_ERROR_IF(!mapped_view_);
 }

@@ -21,8 +21,8 @@ void printTopValues(const PointerCounter& pointer_counter, const SymbolResolver&
     auto sorted_pointers = pointer_counter.getSortedPointersWithCounts();
     
     std::wcout << L"\n=== TOP " << top_count << L" MOST FREQUENT VALUES WITH SYMBOLS ===" << std::endl;
-    std::wcout << L"Value (Hex)          | Count     | Percentage | Symbol" << std::endl;
-    std::wcout << L"---------------------|-----------|------------|----------------------------------------" << std::endl;
+    std::wcout << L"Value (Hex)        | Count     | Percentage | Symbol" << std::endl;
+    std::wcout << L"-------------------|-----------|------------|----------------------------------------" << std::endl;
     
     uint64_t total_count = 0;
     for (const auto& pair : sorted_pointers) {
@@ -96,6 +96,8 @@ int wmain(int argc, wchar_t** argv) {
         DUPLICATE_SAME_ACCESS
     ));
     SymbolResolver symbol_resolver(mapped_file, process_handle_dup);
+    // Uncomment for quick testing of symbol resolution
+    // std::wcout << L"Symbol resolve test: " << symbol_resolver.resolveSymbol(0x00007FFAAB738708) << std::endl;
     PointerCounter pointer_counter(mapped_file);
     printTopValues(pointer_counter, symbol_resolver, top_count);
 }
