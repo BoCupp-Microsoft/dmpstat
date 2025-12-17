@@ -45,8 +45,26 @@ void LoadModules(const MappedFile& mapped_file, const wil::unique_handle& proces
         
         std::wstring module_name(module_name_dmp_str->Buffer, module_name_dmp_str->Length / sizeof(wchar_t));
         
+        // Extract UUID from CvRecord if available
+        std::wstring uuid_str = L"<no UUID>";
+        if (module.CvRecord.DataSize >= sizeof(DWORD) + 16) { // DWORD signature + 16 bytes for GUID
+            BYTE* cv_data = static_cast<BYTE*>(mapped_file.get()) + module.CvRecord.Rva;
+            DWORD signature = *reinterpret_cast<DWORD*>(cv_data);
+            
+            // Check for RSDS signature (0x53445352) which contains GUID
+            if (signature == 0x53445352) {
+                GUID* guid = reinterpret_cast<GUID*>(cv_data + sizeof(DWORD));
+                wchar_t guid_buffer[64];
+                swprintf_s(guid_buffer, L"{%08X-%04X-%04X-%02X%02X-%02X%02X%02X%02X%02X%02X}",
+                    guid->Data1, guid->Data2, guid->Data3,
+                    guid->Data4[0], guid->Data4[1], guid->Data4[2], guid->Data4[3],
+                    guid->Data4[4], guid->Data4[5], guid->Data4[6], guid->Data4[7]);
+                uuid_str = guid_buffer;
+            }
+        }
+        
         // Load symbols for this module
-        std::wcout << L"Loading symbols for module: " << module_name << "... ";
+        std::wcout << L"Loading symbols for module: " << module_name << L" (UUID: " << uuid_str << L")... ";
         DWORD64 baseAddress = SymLoadModuleExW(
             process_handle.get(),
             nullptr,
