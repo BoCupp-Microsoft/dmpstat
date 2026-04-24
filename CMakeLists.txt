@@ -9,10 +9,10 @@ set(CMAKE_CXX_STANDARD_REQUIRED ON)
 set(CMAKE_RUNTIME_OUTPUT_DIRECTORY ${CMAKE_BINARY_DIR}/bin)
 
 # Add the executable
-add_executable(dmpstat
+add_executable(valcount
     command_line.cpp
     command_line.hpp
-    main.cpp
+    valcount.cpp
     mapped_file.cpp
     mapped_file.hpp
     pointer_counter.cpp
@@ -22,7 +22,7 @@ add_executable(dmpstat
 )
 
 # Set compile definitions for Windows
-target_compile_definitions(dmpstat PRIVATE
+target_compile_definitions(valcount PRIVATE
     WIN32_LEAN_AND_MEAN
     UNICODE
     _UNICODE
@@ -32,19 +32,19 @@ target_compile_definitions(dmpstat PRIVATE
 find_package(WIL CONFIG REQUIRED)
 
 # Link required Windows libraries
-target_link_libraries(dmpstat PRIVATE
+target_link_libraries(valcount PRIVATE
     dbghelp
     WIL::WIL
 )
 
 # Set compiler-specific options
-target_compile_options(dmpstat PRIVATE 
+target_compile_options(valcount PRIVATE 
     /W4      # Warning level 4
     /MP      # Multi-processor compilation
 )
 
 # Set subsystem to console
-set_target_properties(dmpstat PROPERTIES
+set_target_properties(valcount PROPERTIES
     LINK_FLAGS "/SUBSYSTEM:CONSOLE"
 )
 
