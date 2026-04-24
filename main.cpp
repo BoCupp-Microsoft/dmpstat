@@ -12,9 +12,10 @@ void printUsage(const wchar_t* program_name) {
     std::wcout << L"Options:" << std::endl;
     std::wcout << L"  -d <dump_file>  Dump file to process" << std::endl;
     std::wcout << L"  -t <count>      Show top N most frequent values (default: 100)" << std::endl;
+    std::wcout << L"  -s <sympath>    Symbol path for symbol resolution" << std::endl;
     std::wcout << L"  -h              Show this help message" << std::endl;
     std::wcout << L"" << std::endl;
-    std::wcout << L"Example: " << program_name << L" -d memory.dmp -t 1000" << std::endl;
+    std::wcout << L"Example: " << program_name << L" -d memory.dmp -t 1000 -s C:\\Symbols" << std::endl;
 }
 
 void printTopValues(const PointerCounter& pointer_counter, const SymbolResolver& symbol_resolver, int top_count) {
@@ -82,6 +83,27 @@ int wmain(int argc, wchar_t** argv) {
         }
     }
 
+    // Determine symbol path: command line -> environment variable -> default
+    std::wstring sympath;
+    if (!cmd.get(L"-s").empty()) {
+        sympath = cmd.get(L"-s");
+        std::wcout << L"Using command line symbol path: " << sympath << std::endl;
+    } else {
+        // Try to get from _NT_SYMBOL_PATH environment variable
+        wchar_t* env_sympath = nullptr;
+        size_t env_size = 0;
+        if (_wdupenv_s(&env_sympath, &env_size, L"_NT_SYMBOL_PATH") == 0 && env_sympath != nullptr && wcslen(env_sympath) > 0) {
+            sympath = env_sympath;
+            std::wcout << L"Using _NT_SYMBOL_PATH environment variable: " << sympath << std::endl;
+            free(env_sympath);
+        } else {
+            // Default to C:\Symbols (system drive)
+            sympath = L"C:\\Symbols";
+            std::wcout << L"Using default symbol path: " << sympath << std::endl;
+            if (env_sympath) free(env_sympath);
+        }
+    }
+
     MappedFile mapped_file(dumpFilePath);
     
     wil::unique_handle process_handle{GetCurrentProcess()};
@@ -97,7 +119,7 @@ int wmain(int argc, wchar_t** argv) {
     ));
     SymbolResolver symbol_resolver(mapped_file, process_handle_dup);
     // Uncomment for quick testing of symbol resolution
-    // std::wcout << L"Symbol resolve test: " << symbol_resolver.resolveSymbol(0x00007FFAAB738708) << std::endl;
+    //std::wcout << L"Symbol resolve test: " << symbol_resolver.resolveSymbol(0x00007FFAAB738708) << std::endl;
     PointerCounter pointer_counter(mapped_file);
     printTopValues(pointer_counter, symbol_resolver, top_count);
 }

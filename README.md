@@ -8,19 +8,28 @@ of the program being analyzed.
 
 ## Building
 
-### Using CMake (Recommended)
+Dependencies (currently just [WIL](https://github.com/microsoft/wil)) are
+provided through a project-local [vcpkg](https://github.com/microsoft/vcpkg)
+submodule, so no globally installed package manager is required.
+
+### First-time setup
 
 ```bash
-# Create build directory
-mkdir build
-cd build
+# Clone with submodules (or run `git submodule update --init --recursive` after a plain clone)
+git clone --recurse-submodules <repo-url>
 
-# Configure with CMake
-cmake ..
-
-# Build the project
-cmake --build . --config Debug
+# Bootstrap the pinned vcpkg in the submodule (one-time per clone)
+.\vcpkg\bootstrap-vcpkg.bat -disableMetrics
 ```
+
+### Configure and build
+
+```bash
+cmake --preset default
+cmake --build build
+```
+
+The resulting binary is written to `build\bin\dmpstat.exe`.
 
 ## Usage
 

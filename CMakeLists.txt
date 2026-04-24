@@ -28,9 +28,13 @@ target_compile_definitions(dmpstat PRIVATE
     _UNICODE
 )
 
+# Find dependencies provided via vcpkg
+find_package(WIL CONFIG REQUIRED)
+
 # Link required Windows libraries
 target_link_libraries(dmpstat PRIVATE
     dbghelp
+    WIL::WIL
 )
 
 # Set compiler-specific options
