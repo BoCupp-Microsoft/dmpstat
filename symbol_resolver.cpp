@@ -17,7 +17,7 @@ void InitializeSymbols(const wil::unique_handle& process_handle) {
     THROW_LAST_ERROR_IF(!SymInitialize(process_handle.get(), nullptr, FALSE));
 }
 
-void LoadModules(const MappedFile& mapped_file, const wil::unique_handle& process_handle) {
+void LoadModules(const MappedView& mapped_view, const wil::unique_handle& process_handle) {
     std::wcout << L"Loading symbols from dump file..." << std::endl;
     
     // Read module list stream
@@ -25,7 +25,7 @@ void LoadModules(const MappedFile& mapped_file, const wil::unique_handle& proces
     ULONG module_stream_size = 0;
     
     THROW_IF_WIN32_BOOL_FALSE(MiniDumpReadDumpStream(
-        mapped_file.get(), 
+        mapped_view.get(), 
         ModuleListStream, 
         nullptr, 
         &module_stream, 
@@ -41,14 +41,14 @@ void LoadModules(const MappedFile& mapped_file, const wil::unique_handle& proces
         
         // Get module name
         PMINIDUMP_STRING module_name_dmp_str = reinterpret_cast<PMINIDUMP_STRING>(
-            static_cast<BYTE*>(mapped_file.get()) + module.ModuleNameRva);
+            static_cast<BYTE*>(mapped_view.get()) + module.ModuleNameRva);
         
         std::wstring module_name(module_name_dmp_str->Buffer, module_name_dmp_str->Length / sizeof(wchar_t));
         
         // Extract UUID from CvRecord if available
         std::wstring uuid_str = L"<no UUID>";
         if (module.CvRecord.DataSize >= sizeof(DWORD) + 16) { // DWORD signature + 16 bytes for GUID
-            BYTE* cv_data = static_cast<BYTE*>(mapped_file.get()) + module.CvRecord.Rva;
+            BYTE* cv_data = static_cast<BYTE*>(mapped_view.get()) + module.CvRecord.Rva;
             DWORD signature = *reinterpret_cast<DWORD*>(cv_data);
             
             // Check for RSDS signature (0x53445352) which contains GUID
@@ -88,10 +88,10 @@ void LoadModules(const MappedFile& mapped_file, const wil::unique_handle& proces
     }
 }
 
-SymbolResolver::SymbolResolver(const MappedFile& mapped_file, const wil::unique_handle& process_handle)
-    : mapped_file_(mapped_file), process_handle_(process_handle) {
+SymbolResolver::SymbolResolver(const MappedView& mapped_view, const wil::unique_handle& process_handle)
+    : mapped_view_(mapped_view), process_handle_(process_handle) {
     InitializeSymbols(process_handle_);
-    LoadModules(mapped_file_, process_handle_);
+    LoadModules(mapped_view_, process_handle_);
 }
 
 std::wstring SymbolResolver::resolveSymbol(uint64_t address) const {

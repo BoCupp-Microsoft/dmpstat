@@ -22,12 +22,12 @@ bool IsValidUserModePointer(UINT64 value) {
     return false;
 }
 
-PointerCounter::PointerCounter(const MappedFile& mapped_file) {
+PointerCounter::PointerCounter(const MappedView& mapped_view) {
     // Read memory list stream
     void* stream = nullptr;
     ULONG stream_size = 0;
     
-    THROW_IF_WIN32_BOOL_FALSE(MiniDumpReadDumpStream(mapped_file.get(), Memory64ListStream, nullptr, &stream, &stream_size));
+    THROW_IF_WIN32_BOOL_FALSE(MiniDumpReadDumpStream(mapped_view.get(), Memory64ListStream, nullptr, &stream, &stream_size));
     
     auto memory_list = static_cast<PMINIDUMP_MEMORY64_LIST>(stream);
     std::wcout << L"Processing Memory64ListStream with " << memory_list->NumberOfMemoryRanges 
@@ -44,7 +44,7 @@ PointerCounter::PointerCounter(const MappedFile& mapped_file) {
                     << L" Size: 0x" << memory_desc.DataSize << std::dec << std::endl;
         
         // Get pointer to memory data in dump file
-        BYTE* memory_data = static_cast<BYTE*>(mapped_file.get()) + current_rva;
+        BYTE* memory_data = static_cast<BYTE*>(mapped_view.get()) + current_rva;
         
         // Process 64-bit values at 8-byte aligned boundaries
         ULONG64 aligned_size = memory_desc.DataSize & ~7; // Round down to 8-byte boundary

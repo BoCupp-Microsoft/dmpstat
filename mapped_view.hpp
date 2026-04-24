@@ -3,9 +3,9 @@
 #include <string>
 #include <wil/resource.h>
 
-class MappedFile {
+class MappedView {
 public:
-    MappedFile(const std::wstring& file_path);
+    MappedView(const std::wstring& file_path);
     void* get() const;
 private:
     wil::unique_hfile file_handle_;

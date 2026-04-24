@@ -13,8 +13,8 @@ add_executable(valcount
     command_line.cpp
     command_line.hpp
     valcount.cpp
-    mapped_file.cpp
-    mapped_file.hpp
+    mapped_view.cpp
+    mapped_view.hpp
     pointer_counter.cpp
     pointer_counter.hpp
     symbol_resolver.cpp

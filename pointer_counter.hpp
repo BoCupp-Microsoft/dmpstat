@@ -1,11 +1,11 @@
 #pragma once
 
 #include <unordered_map>
-#include "mapped_file.hpp"
+#include "mapped_view.hpp"
 
 class PointerCounter {
 public:
-    PointerCounter(const MappedFile& mapped_file);
+    PointerCounter(const MappedView& mapped_view);
     std::vector<std::pair<uint64_t, uint64_t>> getSortedPointersWithCounts() const;
 
 private:

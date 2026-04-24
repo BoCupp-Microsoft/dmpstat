@@ -3,7 +3,7 @@
 #include <wil/result.h>
 #include <wil/win32_helpers.h>
 #include "command_line.hpp"
-#include "mapped_file.hpp"
+#include "mapped_view.hpp"
 #include "pointer_counter.hpp"
 #include "symbol_resolver.hpp"
 
@@ -104,7 +104,7 @@ int wmain(int argc, wchar_t** argv) {
         }
     }
 
-    MappedFile mapped_file(dumpFilePath);
+    MappedView mapped_view(dumpFilePath);
     
     wil::unique_handle process_handle{GetCurrentProcess()};
     wil::unique_handle process_handle_dup;
@@ -117,9 +117,9 @@ int wmain(int argc, wchar_t** argv) {
         FALSE,
         DUPLICATE_SAME_ACCESS
     ));
-    SymbolResolver symbol_resolver(mapped_file, process_handle_dup);
+    SymbolResolver symbol_resolver(mapped_view, process_handle_dup);
     // Uncomment for quick testing of symbol resolution
     //std::wcout << L"Symbol resolve test: " << symbol_resolver.resolveSymbol(0x00007FFAAB738708) << std::endl;
-    PointerCounter pointer_counter(mapped_file);
+    PointerCounter pointer_counter(mapped_view);
     printTopValues(pointer_counter, symbol_resolver, top_count);
 }
