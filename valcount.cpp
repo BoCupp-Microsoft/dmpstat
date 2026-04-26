@@ -49,8 +49,8 @@ void printTopValues(const PointerCounter& pointer_counter, const SymbolResolver&
         std::wstring symbol_name = symbol_resolver.resolveSymbol(info.value);
         
         // Truncate very long symbol names for better display
-        if (symbol_name.length() > 40) {
-            symbol_name = symbol_name.substr(0, 37) + L"...";
+        if (symbol_name.length() > 200) {
+            symbol_name = symbol_name.substr(0, 197) + L"...";
         }
         
         std::wcout << L"0x" << std::hex << std::uppercase << std::setw(16) << std::setfill(L'0') 
@@ -82,6 +82,7 @@ int wmain(int argc, wchar_t** argv) {
     std::string dump_file_utf8;
     int top_count = 100;
     std::string sympath_utf8;
+    bool verbose = false;
 
     app.add_option("dump_file", dump_file_utf8, "Dump file to process")
         ->required()
@@ -91,6 +92,7 @@ int wmain(int argc, wchar_t** argv) {
         ->check(CLI::PositiveNumber);
     app.add_option("-s,--sympath", sympath_utf8,
         "Symbol path for symbol resolution (defaults to _NT_SYMBOL_PATH or C:\\Symbols)");
+    app.add_flag("-v,--verbose", verbose, "Print DbgHelp diagnostic messages");
 
     // Build a vector<const char*> for CLI11; it expects argv-style (program name first is fine).
     std::vector<char*> argv_utf8;
@@ -121,22 +123,11 @@ int wmain(int argc, wchar_t** argv) {
         }
     }
 
+
     MappedView mapped_view(dumpFilePath);
 
-    wil::unique_handle process_handle{GetCurrentProcess()};
-    wil::unique_handle process_handle_dup;
-    THROW_IF_WIN32_BOOL_FALSE(DuplicateHandle(
-        process_handle.get(),
-        process_handle.get(),
-        process_handle.get(),
-        process_handle_dup.put(),
-        0,
-        FALSE,
-        DUPLICATE_SAME_ACCESS
-    ));
-
     ProgressReporter progress;
-    SymbolResolver symbol_resolver(mapped_view, process_handle_dup, progress);
+    SymbolResolver symbol_resolver(mapped_view, sympath, progress, verbose);
     PointerCounter pointer_counter(mapped_view, progress);
     progress.clear();
 
