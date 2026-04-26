@@ -1,0 +1,953 @@
+<!DOCTYPE html>
+<!--
+  Template for segments_report.py.
+
+  Placeholders (each enclosed in double curly braces) substituted by the
+  script: TITLE, GENERATED, ROWS, FOOTER.  See segments_report.py for the
+  exact tokens; do not repeat them inside this comment.
+
+  Per-classification explanations live in the template-tag blocks at the
+  bottom of this file.  The script extracts each block's inner HTML and
+  inlines it into the matching row.  To edit explanations, edit those
+  blocks - no code change required.
+
+  Recognised classification keys (script.classify):
+    image-text, image-rodata, image-data-cow, image-data-written,
+    image-rwx, image-other,
+    mapped-readonly, mapped-readwrite, mapped-exec, mapped-noaccess,
+    mapped-other,
+    private-rw, private-guard, private-rx, private-rwx,
+    private-readonly, private-noaccess, private-other,
+    reserve-private, reserve-mapped, reserve-image, reserve-other,
+    free, unknown
+-->
+<html lang="en">
+<head>
+  <meta charset="utf-8">
+  <title>Segments report - {{TITLE}}</title>
+  <style>
+    :root {
+      --bg: #fafafa;
+      --fg: #1a1a1a;
+      --muted: #666;
+      --border: #d0d0d0;
+      --accent: #0b5fff;
+      --code-bg: #f0f0f0;
+      --row-hover: #f4f6fb;
+      --signal-warn: #b85c00;
+      --signal-info: #0b5fff;
+      --signal-bad:  #b00020;
+      --signal-ok:   #1f7a3a;
+    }
+    body {
+      font: 14px/1.45 -apple-system, "Segoe UI", Roboto, Helvetica, Arial, sans-serif;
+      color: var(--fg);
+      background: var(--bg);
+      margin: 0;
+      padding: 24px 32px 64px;
+    }
+    h1 { margin: 0 0 4px; font-size: 22px; }
+    .meta { color: var(--muted); margin-bottom: 24px; font-size: 13px; }
+    .meta code { background: var(--code-bg); padding: 1px 6px; border-radius: 3px; }
+
+    .legend {
+      margin: 0 0 16px; font-size: 12px; color: var(--muted);
+    }
+    .legend .tag { display: inline-block; padding: 1px 6px; border-radius: 3px;
+                   margin-right: 8px; color: white; }
+    .tag.info { background: var(--signal-info); }
+    .tag.ok   { background: var(--signal-ok); }
+    .tag.warn { background: var(--signal-warn); }
+    .tag.bad  { background: var(--signal-bad); }
+
+    .header {
+      display: grid;
+      grid-template-columns: 1em 90px 90px 90px 90px 90px 130px 70px 1fr;
+      gap: 12px;
+      align-items: baseline;
+      padding: 8px 12px;
+      font-weight: 600;
+      border-bottom: 1px solid var(--border);
+      color: var(--muted);
+      font-size: 12px;
+      text-transform: uppercase;
+      letter-spacing: 0.04em;
+    }
+    .header .num, summary .num { text-align: right; font-variant-numeric: tabular-nums; }
+
+    .header .sortable {
+      cursor: pointer;
+      user-select: none;
+      position: relative;
+      padding-right: 16px;
+    }
+    .header .sortable:hover { color: var(--fg); }
+    .header .sortable.sorted { color: var(--accent); }
+    .header .sortable .indicator {
+      display: inline-block;
+      margin-left: 4px;
+      color: var(--accent);
+      font-size: 10px;
+      vertical-align: middle;
+    }
+    .header .sortable .indicator .dir { font-size: 11px; }
+    .header .sortable .indicator .pri {
+      font-size: 9px;
+      vertical-align: super;
+      margin-left: 1px;
+      opacity: 0.7;
+    }
+    .header .sortable.num { padding-right: 16px; }
+
+    summary .pf {
+      display: inline-block;
+      padding: 0 6px;
+      border-radius: 3px;
+      font-size: 11px;
+      font-weight: 600;
+      text-align: center;
+      cursor: help;
+    }
+    .pf-yes   { background: #fde2e2; color: #8a1f1f; }
+    .pf-no    { background: #e3f4e7; color: #1f6b34; }
+    .pf-maybe { background: #fff3cd; color: #7a5b00; }
+
+    details.row {
+      border-bottom: 1px solid var(--border);
+    }
+    details.row > summary {
+      display: grid;
+      grid-template-columns: 1em 90px 90px 90px 90px 90px 130px 70px 1fr;
+      gap: 12px;
+      align-items: baseline;
+      cursor: pointer;
+      list-style: none;
+      padding: 6px 12px;
+      transition: background 0.05s;
+    }
+    summary > .cols { display: contents; }
+    details.row > summary::-webkit-details-marker { display: none; }
+    details.row > summary:hover { background: var(--row-hover); }
+    details.row[open] > summary { background: #eef3ff; }
+    details.row > summary::before {
+      content: "\25B8";
+      color: var(--muted);
+      transition: transform 0.1s;
+      transform-origin: 50% 55%;
+    }
+    details.row[open] > summary::before { transform: rotate(90deg); }
+
+    summary .label { color: var(--fg); }
+    summary .label .tag {
+      display: inline-block;
+      padding: 0 6px;
+      border-radius: 3px;
+      margin-right: 6px;
+      color: white;
+      font-size: 11px;
+      vertical-align: middle;
+    }
+
+    code, .mono {
+      font-family: "Cascadia Mono", Consolas, "Courier New", monospace;
+      font-size: 12.5px;
+    }
+
+    .explanation {
+      padding: 12px 24px 18px 38px;
+      background: white;
+      border-top: 1px solid var(--border);
+    }
+    .explanation h3 { margin: 0 0 8px; font-size: 14px; }
+    .explanation p  { margin: 6px 0; }
+    .explanation ul { margin: 6px 0 6px 20px; padding: 0; }
+    .explanation li { margin: 2px 0; }
+    .explanation .signal {
+      margin: 10px 0;
+      padding: 8px 12px;
+      border-left: 3px solid var(--signal-info);
+      background: #f5f8ff;
+    }
+    .explanation .signal.warn { border-color: var(--signal-warn); background: #fff7ed; }
+    .explanation .signal.bad  { border-color: var(--signal-bad);  background: #fff1f3; }
+    .explanation .signal.ok   { border-color: var(--signal-ok);   background: #f1faf3; }
+
+    .footer {
+      margin-top: 18px;
+      padding: 10px 12px;
+      border-top: 2px solid var(--border);
+      color: var(--muted);
+      font-size: 13px;
+    }
+
+    /* Help button + modal */
+    .help-button {
+      display: inline-flex;
+      align-items: center;
+      justify-content: center;
+      width: 24px;
+      height: 24px;
+      margin-left: 10px;
+      vertical-align: middle;
+      border-radius: 50%;
+      background: var(--accent);
+      color: white;
+      font-weight: 700;
+      font-size: 14px;
+      cursor: pointer;
+      border: none;
+      line-height: 1;
+    }
+    .help-button:hover { background: #094bcc; }
+
+    .help-overlay {
+      position: fixed; inset: 0;
+      background: rgba(20, 24, 36, 0.45);
+      display: none;
+      z-index: 100;
+    }
+    .help-overlay.open { display: block; }
+    .help-modal {
+      position: fixed;
+      top: 5vh; left: 50%;
+      transform: translateX(-50%);
+      width: min(900px, 92vw);
+      max-height: 90vh;
+      overflow-y: auto;
+      background: white;
+      border-radius: 8px;
+      box-shadow: 0 16px 48px rgba(0,0,0,0.25);
+      padding: 24px 32px 32px;
+      z-index: 101;
+    }
+    .help-modal h2 { margin: 0 0 4px; font-size: 20px; }
+    .help-modal h3 { margin: 18px 0 6px; font-size: 15px; }
+    .help-modal p, .help-modal li { font-size: 13.5px; line-height: 1.5; }
+    .help-modal table {
+      border-collapse: collapse;
+      margin: 8px 0 4px;
+      font-size: 13px;
+    }
+    .help-modal th, .help-modal td {
+      border: 1px solid var(--border);
+      padding: 4px 8px;
+      text-align: left;
+      vertical-align: top;
+    }
+    .help-modal th { background: #f2f4f8; }
+    .help-modal code { background: var(--code-bg); padding: 0 4px; border-radius: 3px; }
+    .help-close {
+      position: absolute;
+      top: 12px; right: 16px;
+      width: 28px; height: 28px;
+      border: none; background: transparent;
+      font-size: 22px; line-height: 1;
+      cursor: pointer; color: var(--muted);
+    }
+    .help-close:hover { color: var(--fg); }
+    .help-modal .signal {
+      margin: 10px 0;
+      padding: 8px 12px;
+      border-left: 3px solid var(--signal-info);
+      background: #f5f8ff;
+      font-size: 13px;
+    }
+  </style>
+</head>
+<body>
+  <h1>Memory segments report
+    <button class="help-button" type="button" id="help-open"
+            title="What do these columns mean?" aria-label="Show help">?</button>
+  </h1>
+  <div class="meta">
+    Source: <code>{{TITLE}}</code>  &middot;  Generated: {{GENERATED}}
+  </div>
+
+  <div class="legend">
+    <span class="tag info">expected</span>
+    <span class="tag ok">benign</span>
+    <span class="tag warn">worth checking</span>
+    <span class="tag bad">unusual / red flag</span>
+    <span style="margin-left:12px;">Pagefile-backed:
+      <span class="pf pf-yes">Yes</span>
+      <span class="pf pf-no">No</span>
+      <span class="pf pf-maybe">Maybe</span>
+      (hover for the reason).
+    </span><br>
+    Click any row to expand. Click a column header to sort
+    (asc &rarr; desc &rarr; default). Shift-click to add columns to a
+    multi-key sort.
+  </div>
+
+  <div class="header">
+    <span></span>
+    <span class="sortable" data-sort-key="state"        data-sort-type="text">State<span class="indicator"></span></span>
+    <span class="sortable" data-sort-key="type"         data-sort-type="text">Type<span class="indicator"></span></span>
+    <span class="sortable" data-sort-key="prot"         data-sort-type="text">Prot<span class="indicator"></span></span>
+    <span class="sortable" data-sort-key="allocprot"    data-sort-type="text">AllocProt<span class="indicator"></span></span>
+    <span class="sortable num" data-sort-key="regions"  data-sort-type="num">Regions<span class="indicator"></span></span>
+    <span class="sortable num" data-sort-key="bytes"    data-sort-type="num">Total Size<span class="indicator"></span></span>
+    <span class="sortable" data-sort-key="pagefile" data-sort-type="pagefile">Pagefile<span class="indicator"></span></span>
+    <span class="sortable" data-sort-key="severity" data-sort-type="severity">Classification<span class="indicator"></span></span>
+  </div>
+
+  <div id="rows">
+  {{ROWS}}
+  </div>
+
+  <div class="footer">{{FOOTER}}</div>
+
+  <!-- Help modal: hidden until the ? button is clicked. -->
+  <div class="help-overlay" id="help-overlay" role="dialog" aria-modal="true" aria-labelledby="help-title">
+    <div class="help-modal">
+      <button class="help-close" id="help-close" aria-label="Close">&times;</button>
+      <div id="help-body">{{HELP}}</div>
+    </div>
+  </div>
+
+  <script>
+    (function () {
+      const openBtn  = document.getElementById('help-open');
+      const closeBtn = document.getElementById('help-close');
+      const overlay  = document.getElementById('help-overlay');
+      function open()  { overlay.classList.add('open'); }
+      function close() { overlay.classList.remove('open'); }
+      openBtn.addEventListener('click', open);
+      closeBtn.addEventListener('click', close);
+      overlay.addEventListener('click', e => { if (e.target === overlay) close(); });
+      document.addEventListener('keydown', e => {
+        if (e.key === 'Escape' && overlay.classList.contains('open')) close();
+      });
+    })();
+  </script>
+
+<!-- ============================================================ -->
+<!--   HELP CONTENT (rendered into the modal by the script)        -->
+<!-- ============================================================ -->
+
+<template data-help>
+  <h2 id="help-title">About this report</h2>
+  <p>Each row aggregates regions from the dump's
+     <code>MemoryInfoListStream</code> by the four-tuple
+     <em>(State, Type, Prot, AllocProt)</em>.  Click a row to expand a
+     description of that combination.  Click a column header to sort
+     (ascending &rarr; descending &rarr; default order); shift-click to
+     add the column to a multi-key sort stack.</p>
+
+  <h3>Columns</h3>
+  <table>
+    <tr><th>Column</th><th>Meaning</th></tr>
+    <tr>
+      <td><strong>State</strong></td>
+      <td><code>COMMIT</code> = pages are committed and have backing
+          (RAM, file, or pagefile).
+          <code>RESERVE</code> = address space reserved but no commit
+          charge.
+          <code>FREE</code> = unallocated address space.</td>
+    </tr>
+    <tr>
+      <td><strong>Type</strong></td>
+      <td><code>IMAGE</code> = pages of a loaded PE module (a DLL/EXE).
+          <code>MAPPED</code> = a view of a section object (file mapping
+          or pagefile-backed shared memory).
+          <code>PRIVATE</code> = ordinary heap/stack/<code>VirtualAlloc</code>
+          memory not shared with any file or other process.</td>
+    </tr>
+    <tr>
+      <td><strong>Prot</strong></td>
+      <td>Current page protection at the moment of the dump (see below
+          for the full Prot vs AllocProt explanation).</td>
+    </tr>
+    <tr>
+      <td><strong>AllocProt</strong></td>
+      <td>Protection chosen when the containing reservation was first
+          created.  Set once, never changes.</td>
+    </tr>
+    <tr>
+      <td><strong>Regions</strong></td>
+      <td>How many distinct contiguous regions in the dump fall into
+          this (State, Type, Prot, AllocProt) bucket.</td>
+    </tr>
+    <tr>
+      <td><strong>Total Size</strong></td>
+      <td>Sum of <code>RegionSize</code> across all regions in this
+          bucket.</td>
+    </tr>
+    <tr>
+      <td><strong>Pagefile</strong></td>
+      <td>Whether this bucket counts against the system commit limit
+          (i.e. is pagefile-backed): <code>Yes</code> for committed
+          private pages and privatized image pages;
+          <code>No</code> for free, reserved, file-backed image pages,
+          and inaccessible mapped pages; <code>Maybe</code> for mapped
+          regions that could be either file-backed or pagefile-backed
+          shared memory.  Hover the cell for the per-row reason.</td>
+    </tr>
+    <tr>
+      <td><strong>Classification</strong></td>
+      <td>A friendly label plus a severity tag
+          (<span class="tag info">info</span>,
+           <span class="tag ok">ok</span>,
+           <span class="tag warn">warn</span>,
+           <span class="tag bad">bad</span>) summarising what this kind
+          of region typically represents and how concerned to be about
+          it.</td>
+    </tr>
+  </table>
+
+  <h3>Protection mnemonics (Prot &amp; AllocProt)</h3>
+  <p>Each three-character mnemonic decodes the access bits of a Win32
+     <code>PAGE_*</code> constant.  <strong>R</strong> = read,
+     <strong>W</strong> = write, <strong>X</strong> = execute,
+     <strong>C</strong> = copy-on-write
+     (<code>PAGE_*WRITECOPY</code>); <code>-</code> means the bit is not
+     set.  Suffixes:</p>
+  <ul>
+    <li><code>+G</code> &mdash; <code>PAGE_GUARD</code> (one-shot
+        trip-wire; cleared when fired).</li>
+    <li><code>+NC</code> &mdash; <code>PAGE_NOCACHE</code>.</li>
+    <li><code>+WC</code> &mdash; <code>PAGE_WRITECOMBINE</code>.</li>
+  </ul>
+
+  <h3>Difference between <code>Prot</code> and <code>AllocProt</code></h3>
+  <p>They come from the two protection fields in
+     <code>MEMORY_BASIC_INFORMATION</code>, and they describe protection
+     at two different levels of granularity.</p>
+
+  <p><strong>Prot</strong> &mdash; current page protection.  Comes from
+     <code>MEMORY_BASIC_INFORMATION.Protect</code>.  This is the
+     protection of the pages right now, at the granularity Windows
+     actually enforces (4 KB pages on x64/ARM64).  It's the value the
+     CPU/MMU consults on every memory access to decide whether to fault
+     or not.</p>
+  <p>Prot can be changed at runtime by
+     <code>VirtualProtect</code>/<code>VirtualProtectEx</code>, by a
+     write to a copy-on-write page (which silently downgrades
+     <code>RWC</code> to <code>RW-</code>), by <code>PAGE_GUARD</code>
+     firing once and clearing itself, etc.  If a region in the dump
+     shows <code>Prot = R-X</code>, it means: as of the moment the dump
+     was captured, those pages were execute-only-readable.  Trying to
+     write would have raised an access violation.</p>
+
+  <p><strong>AllocProt</strong> &mdash; protection at allocation /
+     reservation time.  Comes from
+     <code>MEMORY_BASIC_INFORMATION.AllocationProtect</code>.  This is
+     the protection that was specified when the <em>whole containing
+     reservation</em> was first created &mdash; for
+     <code>VirtualAlloc(MEM_RESERVE)</code> it's the
+     <code>flProtect</code> argument; for an image, it's whatever the
+     loader passed when it reserved the module's image range.  It is
+     set once, at reservation time, and <strong>never changes</strong>
+     for the lifetime of that reservation.  It's a fingerprint of "how
+     was this address space first laid down?"</p>
+
+  <h3>How they relate</h3>
+  <p>Two regions with the same AllocProt belong to the same original
+     reservation; the loader (or the program) then carved that
+     reservation into sub-ranges and applied per-page Prot to each one.
+     So you'll typically see:</p>
+  <table>
+    <tr><th>Source</th><th>AllocProt</th><th>Prot examples</th></tr>
+    <tr><td>Loader-reserved PE image</td><td><code>RCX</code></td>
+        <td><code>R-X</code>, <code>R--</code>, <code>RW-</code>, <code>RWC</code></td></tr>
+    <tr><td><code>VirtualAlloc(MEM_RESERVE, RW)</code> then commit
+            <code>R-X</code> for a JIT</td><td><code>RW-</code></td>
+        <td><code>R-X</code> (the JIT'd code)</td></tr>
+    <tr><td>Stack reservation (<code>RW</code>)</td><td><code>RW-</code></td>
+        <td><code>RW-</code> (committed pages),
+            <code>RW-+G</code> (guard at base),
+            <code>---</code> (uncommitted middle)</td></tr>
+    <tr><td>Heap arena</td><td><code>RW-</code></td>
+        <td><code>RW-</code> (committed slabs),
+            <code>---</code> (uncommitted holes),
+            occasionally <code>R--</code> (read-only quarantined)</td></tr>
+    <tr><td><code>MEM_RESERVE</code>-only</td><td><code>---</code> / <code>-</code></td>
+        <td><code>-</code> (not committed)</td></tr>
+    <tr><td>Mapped section (<code>SEC_RESERVE</code>)</td><td>varies</td>
+        <td>varies</td></tr>
+  </table>
+
+  <h3>Concrete examples from this report</h3>
+  <ul>
+    <li><strong><code>COMMIT / IMAGE / R-X / RCX</code></strong> &mdash;
+        the entire image reservation was made with
+        <code>PAGE_EXECUTE_WRITECOPY</code> (<code>RCX</code>); these
+        particular pages are the <code>.text</code> section, set to
+        <code>R-X</code> per PE section flags.  AllocProt tells you
+        "this is part of a PE image reservation"; Prot tells you "this
+        slice is the code section."</li>
+    <li><strong><code>COMMIT / IMAGE / RW- / RCX</code></strong> &mdash;
+        same image reservation (<code>RCX</code>), but these pages are
+        <code>.data</code> that has been written and so collapsed from
+        <code>RWC</code> to a private <code>RW-</code>.</li>
+    <li><strong><code>COMMIT / PRIVATE / RW-+G / RW-</code></strong>
+        &mdash; a thread stack: the whole stack reservation was
+        <code>RW-</code>, and the guard page at the bottom currently has
+        the <code>+G</code> bit on top of <code>RW-</code>.</li>
+    <li><strong><code>RESERVE / PRIVATE / - / RW-</code></strong>
+        &mdash; somebody called
+        <code>VirtualAlloc(MEM_RESERVE, ..., PAGE_READWRITE)</code> to
+        grab address space for an allocator; nothing is committed yet,
+        so current Prot is <code>-</code> (no enforcement applies to
+        uncommitted pages), while AllocProt remembers that "if and when
+        this gets committed, it's intended to be <code>RW-</code>."</li>
+    <li><strong><code>RESERVE / PRIVATE / - / ---</code></strong>
+        &mdash; same thing but reserved with
+        <code>PAGE_NOACCESS</code>.  Common for V8's pointer-compression
+        cage and other large speculative reservations: "I want a
+        contiguous 4 GB range; I'll commit and protect sub-ranges
+        later."</li>
+  </ul>
+
+  <h3>Why both fields exist</h3>
+  <p>AllocProt is useful even for committed regions because:</p>
+  <ol>
+    <li>It lets you tell apart sub-ranges of an image (whose AllocProt
+        is always the loader's image protection) from generic
+        <code>VirtualAlloc</code>'d memory (whose AllocProt is whatever
+        the caller chose).</li>
+    <li>For <code>VirtualAlloc2</code> /
+        <code>MapViewOfFile3</code> placeholder-replacement workflows,
+        AllocProt reveals the original placeholder protection while
+        Prot reflects whatever was eventually mapped in.</li>
+    <li>When you see a confusing Prot value, AllocProt is the hint
+        about "what was this range <em>intended</em> to be?" &mdash;
+        particularly useful for spotting regions whose protection has
+        been changed away from the original (e.g., a <code>RWX</code>
+        JIT region whose AllocProt was <code>RW-</code> is the classic
+        "allocated as data, later flipped to executable" pattern).</li>
+  </ol>
+
+  <div class="signal">
+    <strong>Mnemonic:</strong> <em>Prot</em> = the page's protection
+    as of the dump.  <em>AllocProt</em> = the page's reservation-time
+    protection, immutable.  If they differ, somebody changed protection
+    (or the loader applied per-section flags).  If they match, the page
+    is still wearing the protection it was born with.
+  </div>
+</template>
+
+<!-- ============================================================ -->
+<!--   EXPLANATION TEMPLATES (edit freely; one per classification) -->
+<!-- ============================================================ -->
+
+<template data-key="image-text" data-label="Module code (.text)" data-tag="info">
+  <h3>Loaded module &mdash; executable code (<code>.text</code>)</h3>
+  <p>Code pages of a loaded PE image. Mapped copy-on-write from the image
+     file, with the loader applying <code>R-X</code> per-section protection.
+     <code>AllocProt = RCX</code> because the entire image was originally
+     reserved as <code>PAGE_EXECUTE_WRITECOPY</code>.</p>
+  <p>These pages are <em>shared</em> across all processes that loaded the
+     same DLL, so they are cheap. Pages that get dirtied here become
+     private (and pagefile-backed) per process.</p>
+  <div class="signal">
+    Most intra-module references on x64 use <code>[rip+disp32]</code>, and on
+    ARM64 use <code>ADRP</code>+offset, both of which are PC-relative and
+    require no load-time patching. Large amounts of dirty code here usually
+    mean lots of base relocations (an x86 module, a non-DYNAMICBASE binary,
+    or aggressive hot-patching).
+  </div>
+</template>
+
+<template data-key="image-rodata" data-label="Module read-only data (.rdata, headers, exception data)" data-tag="info">
+  <h3>Loaded module &mdash; read-only data</h3>
+  <p>Read-only sections of a PE image: <code>.rdata</code>, the PE header
+     page, resources, exception/SEH tables, debug directories, etc. Shared
+     across processes and pageable directly back to the file - no pagefile
+     cost.</p>
+  <p>The IAT (Import Address Table) lives inside a writable sub-range of
+     <code>.rdata</code>; you'll see those pages as <em>image-data-written</em>
+     because the loader patches them at module load.</p>
+</template>
+
+<template data-key="image-data-cow" data-label="Module data, untouched (CoW)" data-tag="ok">
+  <h3>Loaded module &mdash; copy-on-write, not yet written</h3>
+  <p><code>RWC</code> = <code>PAGE_EXECUTE_WRITECOPY</code> at the page level
+     (the protection collapses to <code>RW-</code> on first write). These
+     are <code>.data</code>/<code>.bss</code> pages that have <em>not</em>
+     been touched since the module was loaded, so they're still shared with
+     the on-disk image.</p>
+  <div class="signal ok">
+    A high <em>RWC</em> vs <em>RW-</em> ratio for a module means most of its
+    writable data hasn't been disturbed yet - lazy initialization is doing
+    its job. The opposite ratio is the warning sign (see
+    <em>image-data-written</em> below).
+  </div>
+</template>
+
+<template data-key="image-data-written" data-label="Module data, written (private)" data-tag="warn">
+  <h3>Loaded module &mdash; written, now private</h3>
+  <p>Pages of a loaded module that have been written since load. They are
+     no longer shared with the on-disk file: each process has its own
+     private copy, backed by the pagefile.</p>
+  <p>Expected sources of <code>RW-</code> in an image:</p>
+  <ul>
+    <li><strong>IAT writes</strong> &mdash; the loader stores resolved
+        function addresses into each <code>__imp_*</code> slot.</li>
+    <li><strong>Base relocations</strong> &mdash; the loader fixes up
+        baked-in absolute addresses when the module wasn't loaded at its
+        preferred base. Sparse on x64 (RIP-relative) and ARM64
+        (<code>ADRP</code>); large on x86.</li>
+    <li><strong>Genuinely written globals</strong> &mdash;
+        <code>.data</code> entries the program has updated.</li>
+    <li><strong>C++ <code>const</code> objects with non-trivial
+        constructors</strong> &mdash; the compiler can't put them in
+        <code>.rdata</code>, so they end up here even if the program never
+        modifies them after init. Prefer <code>constexpr</code>/POD
+        aggregates where possible.</li>
+  </ul>
+  <div class="signal warn">
+    A large total here, especially in modules you don't expect to mutate
+    much, is worth investigating. Common offenders: tables built once at
+    startup and never modified again, "cache" pointers patched once,
+    over-eager static initializers, padding that dirties otherwise-cold
+    pages. Each dirty page costs private working set per process and must
+    be paged out (not silently dropped).
+  </div>
+</template>
+
+<template data-key="image-rwx" data-label="Module RWX (writable + executable)" data-tag="bad">
+  <h3>Loaded module &mdash; writable AND executable</h3>
+  <p>A page in a loaded module marked <code>RWX</code>. Highly unusual on
+     modern Windows - W^X policies normally split write and execute.</p>
+  <div class="signal bad">
+    Legitimate cases are rare (some anti-tamper or legacy PGO instrumentation).
+    Otherwise this is a red flag and worth chasing: shellcode injection,
+    runtime code patching, or a module mis-built without proper section
+    flags.
+  </div>
+</template>
+
+<template data-key="image-other" data-label="Module &mdash; other protection" data-tag="info">
+  <h3>Loaded module &mdash; other protection</h3>
+  <p>An IMAGE region with an unusual protection combination. Could be a
+     hardened section (e.g. <code>--X</code> execute-only) or a custom
+     section produced by a non-default linker configuration.</p>
+</template>
+
+<template data-key="mapped-readonly" data-label="File / section mapping (read-only)" data-tag="ok">
+  <h3>File-backed mapping &mdash; read-only</h3>
+  <p>A view of a section object mapped read-only into the process: ICU
+     data, locale tables, font files, V8 snapshot blobs, registered
+     resource files, etc. Pages are shared with the file on disk and
+     pageable directly back to it.</p>
+  <p>Cheap and benign. Large totals usually just mean a lot of read-only
+     data assets are mapped (Chromium, for instance, mmaps many resource
+     bundles).</p>
+  <div class="signal">
+    <strong>Pagefile column &mdash; "Maybe":</strong> a MAPPED region is
+    backed either by a file on disk (no commit charge) or by a
+    pagefile-backed section used as shared memory (charged at section
+    creation). <code>MEMORY_BASIC_INFORMATION</code> doesn't distinguish
+    the two, so the column has to say "Maybe."  <em>In practice, R--
+    mapped views are essentially always file-backed</em> &mdash; ICU/V8
+    data, fonts, resource paks, <code>LoadLibraryEx
+    (LOAD_LIBRARY_AS_DATAFILE)</code> images, plain
+    <code>MapViewOfFile(FILE_MAP_READ)</code> readers. Pagefile-backed
+    shared sections are essentially always created writable so producers
+    can write into them, so a R-- view of one is a curiosity rather than
+    a meaningful contributor to commit pressure.
+  </div>
+</template>
+
+<template data-key="mapped-readwrite" data-label="File / section mapping (read-write)" data-tag="info">
+  <h3>File-backed or shared mapping &mdash; read-write</h3>
+  <p>A writable view of a section object. Could be a writable file
+     mapping (<code>MapViewOfFile</code> with write access) or a
+     pagefile-backed section used for inter-process shared memory.</p>
+  <p>Writes propagate back to the file (or to the shared section, visible
+     to other processes that mapped it). Common in IPC-heavy programs
+     (Chromium's mojo shared buffers, GPU command rings, audio shared
+     memory rings, etc.).</p>
+  <div class="signal warn">
+    <strong>Pagefile column &mdash; "Maybe":</strong> writable MAPPED rows
+    are the genuinely ambiguous case. If the section is file-backed
+    (<code>CreateFileMappingW(hFile, ...)</code>) the dirty pages page
+    out to the file and don't add to system commit. If the section is
+    pagefile-backed (<code>CreateFileMappingW(INVALID_HANDLE_VALUE, ..., SEC_COMMIT, ...)</code>),
+    commit was charged at section-creation time and this view counts
+    against the system commit limit. Both patterns are common in
+    Chromium-class programs (mojo shared buffers and GPU rings are
+    pagefile-backed; on-disk databases like LevelDB/SQLite WAL are
+    file-backed).
+  </div>
+</template>
+
+<template data-key="mapped-exec" data-label="File / section mapping (executable)" data-tag="warn">
+  <h3>File-backed mapping &mdash; executable</h3>
+  <p>A file/section mapping with execute permission that isn't a PE image
+     (those would show up as IMAGE). Rare on modern Windows.</p>
+  <div class="signal warn">
+    Legit users are scarce: some JIT runtimes and a few legacy
+    anti-cheat/anti-tamper systems. Worth investigating what is mapped
+    here and why.
+  </div>
+</template>
+
+<template data-key="mapped-noaccess" data-label="Section mapping &mdash; inaccessible" data-tag="info">
+  <h3>Mapped section &mdash; currently inaccessible</h3>
+  <p>Pages that belong to a mapped section but are currently
+     <code>PAGE_NOACCESS</code>. Often arise from sections created with
+     <code>SEC_RESERVE</code> where only some sub-ranges have been
+     committed, or from system bookkeeping like CFG (Control Flow Guard)
+     bitmaps that are address-reserved but only partially committed.</p>
+</template>
+
+<template data-key="mapped-other" data-label="Section mapping &mdash; other protection" data-tag="info">
+  <h3>Mapped section &mdash; other protection</h3>
+  <p>A MAPPED region with an uncommon protection combination. Inspect
+     the specific addresses with <code>!address</code> in WinDbg for
+     more detail.</p>
+</template>
+
+<template data-key="private-rw" data-label="Process private memory (heap, stack, allocator)" data-tag="info">
+  <h3>Private read-write &mdash; heap / stack / allocator</h3>
+  <p>The bread-and-butter of process memory: pagefile-backed,
+     read-write, not shared with any file or other process. Includes:</p>
+  <ul>
+    <li>Process and thread heaps (<code>HeapAlloc</code>, the C runtime).</li>
+    <li>Custom allocators (<code>PartitionAlloc</code>, <code>jemalloc</code>,
+        <code>mimalloc</code>, V8's <code>cppgc</code>, etc.).</li>
+    <li>Thread stacks (the committed portion).</li>
+    <li>Manually <code>VirtualAlloc</code>-ed working buffers.</li>
+  </ul>
+  <p>Most of a renderer process's commit usually lives here. Big totals
+     are normal; surprising spikes deserve a heap profiler, not necessarily
+     a memory map tool.</p>
+</template>
+
+<template data-key="private-guard" data-label="Stack guard pages (PAGE_GUARD)" data-tag="ok">
+  <h3>Private &mdash; guard pages</h3>
+  <p>One-shot trip-wire pages: the next access raises
+     <code>STATUS_GUARD_PAGE_VIOLATION</code>, the kernel handles it (e.g.
+     to grow a thread's stack on demand), and clears the guard bit.</p>
+  <p>You typically see roughly one of these per thread (the bottom of each
+     thread's stack reservation). They are cheap and benign.</p>
+</template>
+
+<template data-key="private-rx" data-label="Private executable memory (JIT)" data-tag="info">
+  <h3>Private &mdash; executable (JIT-emitted code)</h3>
+  <p>Almost always JIT-emitted code: V8's TurboFan/Maglev/Sparkplug code
+     space, .NET ReadyToRun stubs, JavaScriptCore, regex engines, etc. The
+     runtime typically <code>VirtualAlloc</code>s as <code>RW</code>,
+     writes the code, then <code>VirtualProtect</code>s to <code>R-X</code>
+     (W^X discipline).</p>
+  <p>In a Chromium renderer this is mostly V8 code pages.</p>
+</template>
+
+<template data-key="private-rwx" data-label="Private RWX (writable + executable)" data-tag="warn">
+  <h3>Private &mdash; writable AND executable</h3>
+  <p>JIT-style allocations that don't bother separating write and execute.
+     Older JITs, some scripting engines, or ad-hoc trampoline code.</p>
+  <div class="signal warn">
+    Increasingly avoided due to W^X mitigations (Arbitrary Code Guard,
+    CFG, CET). Large amounts here in a process that <em>shouldn't</em>
+    have a JIT (e.g. a non-script process) merit investigation.
+  </div>
+</template>
+
+<template data-key="private-readonly" data-label="Private read-only" data-tag="info">
+  <h3>Private &mdash; read-only</h3>
+  <p>Private memory that has been <code>VirtualProtect</code>-ed to
+     read-only after initialization. Common patterns:</p>
+  <ul>
+    <li>Sealed runtime constants (e.g. V8 immortal/immovable roots).</li>
+    <li>Frozen JIT inline caches.</li>
+    <li>Sandbox metadata that the renderer is allowed to read but not
+        modify.</li>
+  </ul>
+</template>
+
+<template data-key="private-noaccess" data-label="Private no-access (poisoning / red zones)" data-tag="info">
+  <h3>Private &mdash; no access</h3>
+  <p>Committed but currently inaccessible. Used as deliberate poisoning
+     around live allocations: ASAN red zones, allocator quarantine,
+     sandbox guard pages, V8's pointer-cage guard regions, etc. They
+     consume commit but trap on access.</p>
+</template>
+
+<template data-key="private-other" data-label="Private &mdash; other protection" data-tag="info">
+  <h3>Private &mdash; other protection</h3>
+  <p>A private region with an uncommon protection. Use
+     <code>!address &lt;addr&gt;</code> in WinDbg to get more context.</p>
+</template>
+
+<template data-key="reserve-private" data-label="Reserved private VA (no commit)" data-tag="info">
+  <h3>Reserved &mdash; private (uncommitted address space)</h3>
+  <p>Address space reserved with <code>VirtualAlloc(MEM_RESERVE)</code> but
+     not yet committed. Typical sources:</p>
+  <ul>
+    <li>Heap arenas pre-reserving a large region they will commit
+        sub-ranges of on demand.</li>
+    <li>V8's pointer-compression cage (4 GB per isolate) and other large
+        pre-reservations used to keep pointer arithmetic cheap.</li>
+    <li>Allocator slab/segment pools.</li>
+  </ul>
+  <p>These regions consume <em>address space</em> but not RAM or pagefile.
+     Huge totals on x64 are normal and not by themselves a leak signal.</p>
+</template>
+
+<template data-key="reserve-mapped" data-label="Reserved section mapping" data-tag="info">
+  <h3>Reserved &mdash; section mapping (uncommitted view)</h3>
+  <p>The address range belongs to a mapped section object, but those
+     particular pages aren't yet committed. Common sources:</p>
+  <ul>
+    <li>Sections created with <code>SEC_RESERVE</code> where commit is
+        applied lazily as needed.</li>
+    <li><code>MapViewOfFile3</code>/<code>VirtualAlloc2</code> placeholders
+        used by allocators that want a contiguous VA range they later
+        replace with real mappings.</li>
+    <li>System bookkeeping mappings (e.g. CFG bitmaps,
+        <code>KiUserSharedData</code>'s neighbouring reservations).</li>
+  </ul>
+</template>
+
+<template data-key="reserve-image" data-label="Reserved within an image" data-tag="info">
+  <h3>Reserved &mdash; within an image</h3>
+  <p>Holes inside a loaded module's reservation that aren't currently
+     committed - alignment gaps between PE sections, or sections marked
+     <code>IMAGE_SCN_MEM_DISCARDABLE</code> that the loader chose not to
+     map. Typically very small.</p>
+</template>
+
+<template data-key="reserve-other" data-label="Reserved &mdash; other" data-tag="info">
+  <h3>Reserved &mdash; other</h3>
+  <p>A reserve-state region that didn't fit the common categories.</p>
+</template>
+
+<template data-key="free" data-label="Free address space" data-tag="ok">
+  <h3>Free &mdash; unallocated address space</h3>
+  <p>The vast majority of a 64-bit process's address space (the user-mode
+     half is 128 TB on x64 Windows). Free regions cost nothing - they're
+     just gaps in the address map.</p>
+</template>
+
+<template data-key="unknown" data-label="Unclassified" data-tag="info">
+  <h3>Unclassified region</h3>
+  <p>The script didn't recognise this combination of (State, Type,
+     Prot, AllocProt). Use WinDbg's <code>!address</code> for details.</p>
+</template>
+
+<script>
+(function () {
+  // Three-state sort cycle on click: asc -> desc -> none (default order).
+  // Shift-click to add or update a column in a multi-key sort stack.
+  // Stack entries: { key, dir }  where dir is 'asc' or 'desc'.
+
+  const container = document.getElementById('rows');
+  const headers = Array.from(document.querySelectorAll('.header .sortable'));
+  const rows = Array.from(container.querySelectorAll(':scope > details.row'));
+  const headerByKey = new Map(headers.map(h => [h.dataset.sortKey, h]));
+  const sortStack = [];
+
+  // Severity order: best -> worst, so ascending sort lists benign rows first.
+  const SEVERITY_RANK = { ok: 0, info: 1, warn: 2, bad: 3 };
+  // Pagefile order: ascending = least to most committed.
+  const PAGEFILE_RANK = { no: 0, maybe: 1, yes: 2 };
+
+  function valueFor(row, key, type) {
+    if (type === 'num') {
+      const v = row.dataset[key];
+      return v === undefined || v === '' ? -Infinity : Number(v);
+    }
+    if (type === 'severity') {
+      const v = (row.dataset[key] || '').toLowerCase();
+      return SEVERITY_RANK[v] !== undefined ? SEVERITY_RANK[v] : 99;
+    }
+    if (type === 'pagefile') {
+      const v = (row.dataset[key] || '').toLowerCase();
+      return PAGEFILE_RANK[v] !== undefined ? PAGEFILE_RANK[v] : 99;
+    }
+    return (row.dataset[key] || '').toLowerCase();
+  }
+
+  function compare(a, b, key, type, dir) {
+    const va = valueFor(a, key, type);
+    const vb = valueFor(b, key, type);
+    let cmp;
+    if (type === 'num' || type === 'severity' || type === 'pagefile') {
+      cmp = va === vb ? 0 : (va < vb ? -1 : 1);
+    } else {
+      cmp = va < vb ? -1 : (va > vb ? 1 : 0);
+    }
+    return dir === 'desc' ? -cmp : cmp;
+  }
+
+  function applySort() {
+    let ordered;
+    if (sortStack.length === 0) {
+      // Restore original order.
+      ordered = rows.slice().sort((a, b) =>
+        Number(a.dataset.originalIndex) - Number(b.dataset.originalIndex));
+    } else {
+      ordered = rows.slice().sort((a, b) => {
+        for (const entry of sortStack) {
+          const header = headerByKey.get(entry.key);
+          const type = header.dataset.sortType;
+          const c = compare(a, b, entry.key, type, entry.dir);
+          if (c !== 0) return c;
+        }
+        // Stable tie-break by original order.
+        return Number(a.dataset.originalIndex) - Number(b.dataset.originalIndex);
+      });
+    }
+    // Reorder the DOM. appendChild moves existing nodes (preserves open state).
+    for (const node of ordered) container.appendChild(node);
+    updateIndicators();
+  }
+
+  function updateIndicators() {
+    for (const h of headers) {
+      const ind = h.querySelector('.indicator');
+      ind.textContent = '';
+      h.classList.remove('sorted');
+    }
+    sortStack.forEach((entry, i) => {
+      const header = headerByKey.get(entry.key);
+      if (!header) return;
+      header.classList.add('sorted');
+      const ind = header.querySelector('.indicator');
+      const arrow = entry.dir === 'asc' ? '\u25B2' : '\u25BC';
+      const priority = sortStack.length > 1 ? `<sup class="pri">${i + 1}</sup>` : '';
+      ind.innerHTML = `<span class="dir">${arrow}</span>${priority}`;
+    });
+  }
+
+  function onHeaderClick(evt) {
+    const header = evt.currentTarget;
+    const key = header.dataset.sortKey;
+    if (!key) return;
+    const idx = sortStack.findIndex(e => e.key === key);
+    const current = idx >= 0 ? sortStack[idx] : null;
+
+    if (evt.shiftKey) {
+      // Multi-key sort: cycle this column independently, leave others alone.
+      if (!current) {
+        sortStack.push({ key, dir: 'asc' });
+      } else if (current.dir === 'asc') {
+        current.dir = 'desc';
+      } else {
+        sortStack.splice(idx, 1);
+      }
+    } else {
+      // Single-key sort: reset the stack to just this column, cycling.
+      // If this header was already the only sorted column, advance its state.
+      const wasSole = sortStack.length === 1 && current;
+      sortStack.length = 0;
+      if (!wasSole) {
+        sortStack.push({ key, dir: 'asc' });
+      } else if (current.dir === 'asc') {
+        sortStack.push({ key, dir: 'desc' });
+      } /* else: third click -> empty stack -> default order */
+    }
+
+    applySort();
+  }
+
+  for (const h of headers) {
+    h.addEventListener('click', onHeaderClick);
+  }
+})();
+</script>
+</body>
+</html>
