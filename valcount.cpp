@@ -31,8 +31,7 @@ std::string WideToUtf8(const std::wstring& s) {
 
 void printTopValues(const PointerCounter& pointer_counter, const SymbolResolver& symbol_resolver, int top_count) {
     auto sorted_pointers = pointer_counter.getSortedPointersWithCounts();
-    
-    std::wcout << L"\n=== TOP " << top_count << L" MOST FREQUENT VALUES WITH SYMBOLS ===" << std::endl;
+
     std::wcout << L"Value (Hex)        | Count     | Percentage | Low Address        | High Address       | Symbol" << std::endl;
     std::wcout << L"-------------------|-----------|------------|--------------------|--------------------|----------------------------------------" << std::endl;
     
@@ -56,7 +55,7 @@ void printTopValues(const PointerCounter& pointer_counter, const SymbolResolver&
         std::wcout << L"0x" << std::hex << std::uppercase << std::setw(16) << std::setfill(L'0') 
                     << info.value << L" | " 
                     << std::dec << std::setfill(L' ') << std::setw(9) << info.count << L" | "
-                    << std::fixed << std::setprecision(2) << std::setw(6) << percentage << L"% | "
+                    << std::fixed << std::setprecision(2) << std::setw(9) << percentage << L"% | "
                     << L"0x" << std::hex << std::uppercase << std::setw(16) << std::setfill(L'0')
                     << info.low_address << L" | "
                     << L"0x" << std::setw(16) << std::setfill(L'0')
