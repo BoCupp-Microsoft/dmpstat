@@ -162,6 +162,8 @@ add_executable(valfind
     mapped_view.hpp
     progress.cpp
     progress.hpp
+    symbol_resolver.cpp
+    symbol_resolver.hpp
 )
 
 target_compile_definitions(valfind PRIVATE

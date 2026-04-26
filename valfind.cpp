@@ -5,6 +5,7 @@
 #include <iomanip>
 #include <iostream>
 #include <limits>
+#include <memory>
 #include <stdexcept>
 #include <string>
 #include <vector>
@@ -13,6 +14,7 @@
 #include <wil/win32_helpers.h>
 #include "mapped_view.hpp"
 #include "progress.hpp"
+#include "symbol_resolver.hpp"
 
 namespace {
 
@@ -62,7 +64,8 @@ void PrintMatch(uint64_t match_address,
                 uint64_t target_value,
                 const MINIDUMP_MEMORY_DESCRIPTOR64& memory_desc,
                 const BYTE* memory_data,
-                uint64_t context) {
+                uint64_t context,
+                const SymbolResolver* symbols) {
     // Compute the byte offset of the match within this memory range.
     const uint64_t match_offset = match_address - memory_desc.StartOfMemoryRange;
 
@@ -85,12 +88,24 @@ void PrintMatch(uint64_t match_address,
         after = entries_after;
     }
 
+    auto resolve = [&](uint64_t v) -> std::wstring {
+        if (!symbols) return {};
+        std::wstring s = symbols->resolveSymbol(v);
+        if (s == L"<unknown>") return {};
+        return s;
+    };
+
+    std::wstring value_sym = resolve(target_value);
     std::wcout << L"Match at 0x"
                << std::hex << std::uppercase << std::setw(16) << std::setfill(L'0')
                << match_address
                << L" (value 0x"
                << std::setw(16) << std::setfill(L'0') << target_value << L")"
-               << std::dec << std::setfill(L' ') << std::endl;
+               << std::dec << std::setfill(L' ');
+    if (!value_sym.empty()) {
+        std::wcout << L"  " << value_sym;
+    }
+    std::wcout << std::endl;
 
     if (before == 0 && after == 0) {
         return;
@@ -107,7 +122,12 @@ void PrintMatch(uint64_t match_address,
                    << addr
                    << L" : 0x"
                    << std::setw(16) << std::setfill(L'0') << value
-                   << std::dec << std::setfill(L' ') << std::endl;
+                   << std::dec << std::setfill(L' ');
+        std::wstring sym = resolve(value);
+        if (!sym.empty()) {
+            std::wcout << L"  " << sym;
+        }
+        std::wcout << std::endl;
     }
 }
 
@@ -131,6 +151,8 @@ int wmain(int argc, wchar_t** argv) {
     uint64_t skip = 0;
     uint64_t max_results = 0; // 0 = unlimited
     uint64_t context = 0;
+    std::string sympath_utf8;
+    bool verbose = false;
 
     app.add_option("dump_file", dump_file_utf8, "Dump file to search")
         ->required()
@@ -150,6 +172,11 @@ int wmain(int argc, wchar_t** argv) {
     app.add_option("--context", context,
         "Pointer-sized values of surrounding context to print on each side")
         ->capture_default_str();
+    app.add_option("-s,--sympath", sympath_utf8,
+        "Symbol path passed verbatim to DbgHelp (enables symbolication of "
+        "the matched value and its context). Defaults to _NT_SYMBOL_PATH if set.");
+    app.add_flag("-v,--verbose", verbose,
+        "Emit DbgHelp diagnostics during symbol loading");
 
     std::vector<char*> argv_utf8;
     argv_utf8.reserve(args_utf8.size());
@@ -182,6 +209,27 @@ int wmain(int argc, wchar_t** argv) {
     MappedView mapped_view(dumpFilePath);
 
     ProgressReporter progress;
+
+    // Optionally build a SymbolResolver. We only construct one if the user
+    // either passed --sympath or has _NT_SYMBOL_PATH set; otherwise we skip
+    // symbolication entirely (avoids loading every module's PDB needlessly).
+    std::wstring sympath;
+    if (!sympath_utf8.empty()) {
+        sympath = Utf8ToWide(sympath_utf8);
+    } else {
+        wchar_t* env_sympath = nullptr;
+        size_t env_size = 0;
+        if (_wdupenv_s(&env_sympath, &env_size, L"_NT_SYMBOL_PATH") == 0 && env_sympath != nullptr && wcslen(env_sympath) > 0) {
+            sympath = env_sympath;
+        }
+        if (env_sympath) free(env_sympath);
+    }
+
+    std::unique_ptr<SymbolResolver> symbols;
+    if (!sympath.empty()) {
+        symbols = std::make_unique<SymbolResolver>(mapped_view, sympath, progress, verbose);
+        progress.clear();
+    }
 
     void* stream = nullptr;
     ULONG stream_size = 0;
@@ -243,7 +291,7 @@ int wmain(int argc, wchar_t** argv) {
             if (value == target_value) {
                 if (matches_seen >= skip) {
                     progress.clear();
-                    PrintMatch(range_start + offset, target_value, memory_desc, memory_data, context);
+                    PrintMatch(range_start + offset, target_value, memory_desc, memory_data, context, symbols.get());
                     matches_printed++;
                     if (max_results != 0 && matches_printed >= max_results) {
                         return 0;
