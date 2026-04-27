@@ -172,7 +172,7 @@ std::optional<OilpanHeap> OilpanHeap::discover(const SymbolResolver& sr,
         const uint64_t hi = std::min(r_end,   cage_end);
         if (lo >= hi) continue;
 
-        OilpanRegion region{};
+        CapturedMemoryRegion region{};
         region.base = lo;
         region.size = hi - lo;
 
@@ -192,7 +192,7 @@ std::optional<OilpanHeap> OilpanHeap::discover(const SymbolResolver& sr,
     }
 
     std::sort(h.regions_.begin(), h.regions_.end(),
-              [](const OilpanRegion& a, const OilpanRegion& b) {
+              [](const CapturedMemoryRegion& a, const CapturedMemoryRegion& b) {
                   return a.base < b.base;
               });
 

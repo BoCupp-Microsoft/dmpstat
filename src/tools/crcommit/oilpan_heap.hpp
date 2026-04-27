@@ -5,31 +5,19 @@
 #include <string>
 #include <vector>
 
+#include "captured_memory_region.hpp"
 #include "dump_memory.hpp"
 
 class SymbolResolver;
 
 namespace dmpstat {
 
-// One private-commit region of the captured process that intersects the
-// Oilpan caged heap. `data` points into the mapped dump file and exposes the
-// bytes that were actually captured for this region; `captured_bytes` is the
-// available run starting at `data`. `size` is the committed extent reported by
-// MemoryInfoListStream and may exceed `captured_bytes` when the dump trimmed
-// the tail of the region.
-struct OilpanRegion {
-    uint64_t       base            = 0;        // virtual address
-    uint64_t       size            = 0;        // committed bytes (per MEM_INFO)
-    const uint8_t* data            = nullptr;  // mapped-file pointer or nullptr
-    uint64_t       captured_bytes  = 0;        // <= size
-};
-
 // Symbol-anchored description of the cppgc / Oilpan caged heap and the set of
 // committed regions inside it. Constructed via OilpanHeap::discover() which
 // resolves both globals (g_heap_base_, g_age_table_size_), reads them from the
 // dump, and walks MemoryInfoListStream collecting the cage-intersecting
-// MEM_COMMIT|MEM_PRIVATE regions. Tools then feed `regions()` into
-// summary/scanning routines.
+// MEM_COMMIT|MEM_PRIVATE regions as CapturedMemoryRegion entries. Tools then
+// feed `regions()` into summary/scanning routines.
 class OilpanHeap {
 public:
     // Locate the cage and gather its committed regions. Returns std::nullopt
@@ -51,7 +39,7 @@ public:
     static constexpr uint64_t kCageCardSizeBytes = 4096;
 
     // Committed regions intersecting the cage, in ascending VA order.
-    const std::vector<OilpanRegion>& regions() const { return regions_; }
+    const std::vector<CapturedMemoryRegion>& regions() const { return regions_; }
 
     // Sum of the cage-intersected committed bytes (regions()[i].size, clipped
     // to the cage range during discovery).
@@ -69,9 +57,10 @@ private:
     uint64_t age_table_size_raw_  = 0;
     std::wstring base_symbol_name_;
     std::wstring size_symbol_name_;
-    std::vector<OilpanRegion> regions_;
+    std::vector<CapturedMemoryRegion> regions_;
     uint64_t committed_bytes_       = 0;
     uint64_t total_private_commit_  = 0;
 };
 
 } // namespace dmpstat
+
