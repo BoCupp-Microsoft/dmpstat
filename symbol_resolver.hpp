@@ -1,6 +1,8 @@
 #pragma once
 
 #include <cstdint>
+#include <functional>
+#include <optional>
 #include <string>
 #include <vector>
 #include <windows.h>
@@ -23,6 +25,19 @@ public:
     // CBA_READ_MEMORY callback so DbgHelp reads from the dump rather than
     // ReadProcessMemory on our own (or a bogus) process.
     DWORD readDumpMemory(uint64_t addr, void* buf, DWORD bytes) const;
+
+    // Look up a fully-qualified symbol name (e.g.
+    // "v8::internal::Heap::isolate_") and return its virtual address if found.
+    // The name may include DbgHelp wildcards (`*`, `?`); only the first match
+    // is returned.
+    std::optional<uint64_t> findGlobal(const std::wstring& name) const;
+
+    // Enumerate all symbols matching `mask` (DbgHelp wildcard syntax). The
+    // callback receives (name, address, size). Return false from the callback
+    // to stop early.
+    struct GlobalHit { std::wstring name; uint64_t address; uint64_t size; };
+    std::vector<GlobalHit> findGlobalsMatching(const std::wstring& mask,
+                                               size_t max_results = 0) const;
 
     bool verbose() const { return verbose_; }
 

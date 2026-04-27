@@ -189,3 +189,71 @@ set_target_properties(valfind PROPERTIES
 )
 
 stage_dbgeng_redist(valfind)
+
+# segments: list committed memory regions in a dump file.
+add_executable(segments
+    segments.cpp
+    mapped_view.cpp
+    mapped_view.hpp
+)
+
+target_compile_definitions(segments PRIVATE
+    WIN32_LEAN_AND_MEAN
+    UNICODE
+    _UNICODE
+    NOMINMAX
+)
+
+target_link_libraries(segments PRIVATE
+    dbghelp
+    WIL::WIL
+    CLI11::CLI11
+)
+
+target_compile_options(segments PRIVATE
+    /W4
+    /MP
+)
+
+set_target_properties(segments PROPERTIES
+    LINK_FLAGS "/SUBSYSTEM:CONSOLE"
+)
+
+stage_dbgeng_redist(segments)
+
+# crcommit: Chromium-aware private-commit analyzer.
+add_executable(crcommit
+    crcommit.cpp
+    mapped_view.cpp
+    mapped_view.hpp
+    dump_memory.cpp
+    dump_memory.hpp
+    symbol_resolver.cpp
+    symbol_resolver.hpp
+    progress.cpp
+    progress.hpp
+)
+
+target_compile_definitions(crcommit PRIVATE
+    WIN32_LEAN_AND_MEAN
+    UNICODE
+    _UNICODE
+    NOMINMAX
+)
+
+target_link_libraries(crcommit PRIVATE
+    dbghelp
+    WIL::WIL
+    CLI11::CLI11
+)
+
+target_compile_options(crcommit PRIVATE
+    /W4
+    /MP
+)
+
+set_target_properties(crcommit PROPERTIES
+    LINK_FLAGS "/SUBSYSTEM:CONSOLE"
+)
+
+stage_dbgeng_redist(crcommit)

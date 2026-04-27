@@ -249,3 +249,36 @@ std::wstring SymbolResolver::resolveSymbol(uint64_t address) const {
 
     return L"<unknown>";
 }
+
+std::optional<uint64_t> SymbolResolver::findGlobal(const std::wstring& name) const {
+    BYTE buf[sizeof(SYMBOL_INFOW) + MAX_SYM_NAME * sizeof(WCHAR)] = {};
+    auto* info = reinterpret_cast<PSYMBOL_INFOW>(buf);
+    info->SizeOfStruct = sizeof(SYMBOL_INFOW);
+    info->MaxNameLen = MAX_SYM_NAME;
+    if (!SymFromNameW(sym_handle_, name.c_str(), info)) return std::nullopt;
+    if (info->Address == 0) return std::nullopt;
+    return info->Address;
+}
+
+namespace {
+struct EnumCtx {
+    std::vector<SymbolResolver::GlobalHit>* out;
+    size_t max_results;
+};
+BOOL CALLBACK SymEnumGlobalsCb(PSYMBOL_INFOW info, ULONG /*size*/, PVOID user) {
+    auto* ctx = static_cast<EnumCtx*>(user);
+    if (!info || info->Address == 0) return TRUE;
+    ctx->out->push_back({std::wstring(info->Name, info->NameLen), info->Address, info->Size});
+    if (ctx->max_results && ctx->out->size() >= ctx->max_results) return FALSE;
+    return TRUE;
+}
+} // namespace
+
+std::vector<SymbolResolver::GlobalHit>
+SymbolResolver::findGlobalsMatching(const std::wstring& mask, size_t max_results) const {
+    std::vector<GlobalHit> hits;
+    EnumCtx ctx{&hits, max_results};
+    // BaseOfDll = 0 means "search all loaded modules".
+    SymEnumSymbolsW(sym_handle_, 0, mask.c_str(), SymEnumGlobalsCb, &ctx);
+    return hits;
+}
