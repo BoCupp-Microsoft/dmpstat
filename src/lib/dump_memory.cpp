@@ -61,3 +61,17 @@ bool DumpMemoryReader::contains(uint64_t addr, size_t bytes) const {
     uint64_t local_off = addr - it->va;
     return (it->size - local_off) >= bytes;
 }
+
+DumpMemoryReader::CapturedSpan DumpMemoryReader::captured_at(uint64_t addr) const {
+    if (ranges_.empty()) return {};
+    auto it = std::upper_bound(ranges_.begin(), ranges_.end(), addr,
+        [](uint64_t v, const MemRange& r) { return v < r.va; });
+    if (it == ranges_.begin()) return {};
+    --it;
+    if (addr >= it->va + it->size) return {};
+    uint64_t local_off = addr - it->va;
+    const uint8_t* base = static_cast<const uint8_t*>(mapped_view_.get())
+                          + it->fileRva + local_off;
+    size_t avail = static_cast<size_t>(it->size - local_off);
+    return {base, avail};
+}

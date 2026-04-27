@@ -33,6 +33,20 @@ public:
     // Returns true if `bytes` starting at `addr` are fully present in the dump.
     bool contains(uint64_t addr, size_t bytes) const;
 
+    // A contiguous run of captured bytes from the mapped dump file. `data` is
+    // a pointer into the file mapping; `size` is how many valid bytes follow.
+    // When the requested address is not covered, `data == nullptr` and
+    // `size == 0`.
+    struct CapturedSpan {
+        const uint8_t* data = nullptr;
+        size_t         size = 0;
+    };
+
+    // Return the largest contiguous captured span that begins at `addr`.
+    // Useful for letting scanners walk the bytes of a region directly without
+    // going through `read()` per slot.
+    CapturedSpan captured_at(uint64_t addr) const;
+
 private:
     struct MemRange {
         uint64_t va;       // virtual address in the captured process
