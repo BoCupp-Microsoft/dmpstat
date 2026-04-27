@@ -8,6 +8,8 @@ add_library(dmpstat_lib STATIC
     progress.hpp
     symbol_resolver.cpp
     symbol_resolver.hpp
+    wide_string_utils.cpp
+    wide_string_utils.hpp
 )
 
 # symbol_downloader.{cpp,hpp} and token_fetcher.{cpp,hpp} are work-in-progress

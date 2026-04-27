@@ -28,28 +28,12 @@
 #include "dump_memory.hpp"
 #include "symbol_resolver.hpp"
 #include "progress.hpp"
+#include "wide_string_utils.hpp"
 
 namespace {
 
-// ---------- Wide/UTF-8 helpers (mirrors valcount/segments) ----------
-
-std::wstring Utf8ToWide(const std::string& s) {
-    if (s.empty()) return {};
-    int needed = MultiByteToWideChar(CP_UTF8, 0, s.data(), static_cast<int>(s.size()), nullptr, 0);
-    std::wstring r(needed, L'\0');
-    MultiByteToWideChar(CP_UTF8, 0, s.data(), static_cast<int>(s.size()), r.data(), needed);
-    return r;
-}
-
-std::string WideToUtf8(const std::wstring& s) {
-    if (s.empty()) return {};
-    int needed = WideCharToMultiByte(CP_UTF8, 0, s.data(), static_cast<int>(s.size()),
-                                     nullptr, 0, nullptr, nullptr);
-    std::string r(needed, '\0');
-    WideCharToMultiByte(CP_UTF8, 0, s.data(), static_cast<int>(s.size()),
-                        r.data(), needed, nullptr, nullptr);
-    return r;
-}
+using dmpstat::Utf8ToWide;
+using dmpstat::WideToUtf8;
 
 // ---------- Pretty-printers ----------
 
