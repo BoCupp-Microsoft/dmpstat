@@ -55,7 +55,7 @@ std::optional<ResolvedGlobal> resolveCppgcGlobal(const SymbolResolver& sr,
 } // namespace
 
 std::optional<OilpanHeap> OilpanHeap::discover(const SymbolResolver& sr,
-                                               const DumpMemoryReader& dm,
+                                               const RandomAccessReader& reader,
                                                void* dump_base,
                                                bool verbose) {
     OilpanHeap h{};
@@ -88,14 +88,14 @@ std::optional<OilpanHeap> OilpanHeap::discover(const SymbolResolver& sr,
     }
 
     // 2. Read both 8-byte values from the dump.
-    const auto cage_base = dm.read<uint64_t>(base_global->address);
+    const auto cage_base = reader.read<uint64_t>(base_global->address);
     if (!cage_base) {
         std::wcerr << L"Error: cage base symbol resolved to VA 0x"
                    << std::hex << base_global->address << std::dec
                    << L" but those bytes are not captured in the dump." << std::endl;
         return std::nullopt;
     }
-    const auto age_table_size = dm.read<uint64_t>(size_global->address);
+    const auto age_table_size = reader.read<uint64_t>(size_global->address);
     if (!age_table_size) {
         std::wcerr << L"Error: age-table-size symbol resolved to VA 0x"
                    << std::hex << size_global->address << std::dec
@@ -172,11 +172,11 @@ std::optional<OilpanHeap> OilpanHeap::discover(const SymbolResolver& sr,
         const uint64_t hi = std::min(r_end,   cage_end);
         if (lo >= hi) continue;
 
-        CapturedMemoryRegion region{};
+        DumpMemoryRegion region{};
         region.base = lo;
         region.size = hi - lo;
 
-        const auto span = dm.captured_at(lo);
+        const auto span = reader.captured_at(lo);
         region.data = span.data;
         region.captured_bytes = std::min<uint64_t>(region.size, span.size);
 
@@ -192,7 +192,7 @@ std::optional<OilpanHeap> OilpanHeap::discover(const SymbolResolver& sr,
     }
 
     std::sort(h.regions_.begin(), h.regions_.end(),
-              [](const CapturedMemoryRegion& a, const CapturedMemoryRegion& b) {
+              [](const DumpMemoryRegion& a, const DumpMemoryRegion& b) {
                   return a.base < b.base;
               });
 

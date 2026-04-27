@@ -1,8 +1,8 @@
 # dmpstat_lib: common code shared across tools.
 add_library(dmpstat_lib STATIC
-    captured_memory_region.hpp
     dump_memory.cpp
     dump_memory.hpp
+    dump_memory_region.hpp
     mapped_view.cpp
     mapped_view.hpp
     progress.cpp

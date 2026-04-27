@@ -4,25 +4,50 @@
 #include <cstring>
 #include <optional>
 #include <vector>
-#include <windows.h>
+
+#include "dump_memory_region.hpp"
 #include "mapped_view.hpp"
 
-// Random-access reader for the captured memory in a Windows minidump.
-// Indexes both Memory64ListStream (full-memory dumps) and MemoryListStream
-// (smaller dumps), letting callers fetch arbitrary byte ranges by
-// virtual address.
+// DumpMemoryReader: walks the captured-memory streams of a Windows minidump
+// (Memory64ListStream + MemoryListStream) and produces a sorted vector of
+// DumpMemoryRegion entries pointing into the mapped dump file. Owns the
+// vector; consumers (RandomAccessReader, PointerCounter, ...) borrow it.
 class DumpMemoryReader {
 public:
     explicit DumpMemoryReader(const MappedView& mapped_view);
 
+    // Captured regions, sorted by base (ascending). Each region's `size`
+    // equals its `captured_bytes` because these come from streams that only
+    // describe captured bytes.
+    const std::vector<dmpstat::DumpMemoryRegion>& regions() const { return regions_; }
+
+private:
+    void buildRegions(const MappedView& mapped_view);
+
+    std::vector<dmpstat::DumpMemoryRegion> regions_;
+};
+
+// RandomAccessReader: virtual-address random reads over a vector of
+// DumpMemoryRegion entries (must be sorted by `base`). The vector is borrowed
+// by const reference and must outlive the reader. Typical wiring is
+//
+//     DumpMemoryReader  dump_memory(mapped_view);
+//     RandomAccessReader reader(dump_memory.regions());
+//
+// but the reader works equally well over any filtered subset (e.g. just the
+// regions that intersect the Oilpan cage).
+class RandomAccessReader {
+public:
+    explicit RandomAccessReader(const std::vector<dmpstat::DumpMemoryRegion>& regions);
+
     // Copy up to `bytes` bytes starting at virtual address `addr` into `buf`.
     // Returns the number of bytes actually copied (0 when the address is
-    // entirely outside any captured range, or when `bytes` is 0).
-    // A short read at the tail of a captured range is allowed.
+    // outside any captured run, or when `bytes` is 0). Short reads at the
+    // tail of a region are allowed.
     size_t read(uint64_t addr, void* buf, size_t bytes) const;
 
-    // Typed convenience: returns std::nullopt if the full sizeof(T) bytes are
-    // not all available at `addr`.
+    // Typed convenience: returns std::nullopt unless the full sizeof(T) bytes
+    // are available at `addr`.
     template <typename T>
     std::optional<T> read(uint64_t addr) const {
         T value{};
@@ -30,32 +55,22 @@ public:
         return value;
     }
 
-    // Returns true if `bytes` starting at `addr` are fully present in the dump.
+    // Returns true if `bytes` starting at `addr` are fully present.
     bool contains(uint64_t addr, size_t bytes) const;
 
-    // A contiguous run of captured bytes from the mapped dump file. `data` is
-    // a pointer into the file mapping; `size` is how many valid bytes follow.
-    // When the requested address is not covered, `data == nullptr` and
-    // `size == 0`.
+    // A contiguous run of captured bytes from the mapped dump file. `data`
+    // points into the file mapping; `size` is how many valid bytes follow.
+    // {nullptr, 0} when the requested address is not covered.
     struct CapturedSpan {
         const uint8_t* data = nullptr;
         size_t         size = 0;
     };
 
-    // Return the largest contiguous captured span that begins at `addr`.
-    // Useful for letting scanners walk the bytes of a region directly without
-    // going through `read()` per slot.
+    // Return the captured bytes starting at `addr`, plus the count remaining
+    // before the end of the region that contains `addr`. Adjacent regions
+    // are not merged.
     CapturedSpan captured_at(uint64_t addr) const;
 
 private:
-    struct MemRange {
-        uint64_t va;       // virtual address in the captured process
-        uint64_t size;     // size in bytes
-        uint64_t fileRva;  // offset into the mapped dump file
-    };
-
-    void buildIndex();
-
-    const MappedView& mapped_view_;
-    std::vector<MemRange> ranges_; // sorted by va
+    const std::vector<dmpstat::DumpMemoryRegion>& regions_;
 };

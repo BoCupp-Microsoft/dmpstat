@@ -1,7 +1,7 @@
 #include <windows.h>
-#include <dbghelp.h>
 #include <algorithm>
 #include <charconv>
+#include <cstring>
 #include <iomanip>
 #include <iostream>
 #include <limits>
@@ -12,6 +12,8 @@
 #include <CLI/CLI.hpp>
 #include <wil/result.h>
 #include <wil/win32_helpers.h>
+#include "dump_memory.hpp"
+#include "dump_memory_region.hpp"
 #include "mapped_view.hpp"
 #include "progress.hpp"
 #include "symbol_resolver.hpp"
@@ -19,6 +21,7 @@
 
 namespace {
 
+using dmpstat::DumpMemoryRegion;
 using dmpstat::Utf8ToWide;
 using dmpstat::WideToUtf8;
 
@@ -50,17 +53,16 @@ uint64_t ParseUInt64(const std::string& text) {
 
 void PrintMatch(uint64_t match_address,
                 uint64_t target_value,
-                const MINIDUMP_MEMORY_DESCRIPTOR64& memory_desc,
-                const BYTE* memory_data,
+                const DumpMemoryRegion& region,
                 uint64_t context,
                 const SymbolResolver* symbols) {
-    // Compute the byte offset of the match within this memory range.
-    const uint64_t match_offset = match_address - memory_desc.StartOfMemoryRange;
+    // Compute the byte offset of the match within this region.
+    const uint64_t match_offset = match_address - region.base;
 
     // Determine how many context entries are available before/after, clamped
-    // by the bounds of the current memory range. Context outside the range is
+    // by the bounds of the current region. Context outside the region is
     // silently truncated.
-    const uint64_t aligned_size = memory_desc.DataSize & ~7ULL;
+    const uint64_t aligned_size = region.captured_bytes & ~7ULL;
 
     uint64_t before = context;
     if (match_offset / sizeof(uint64_t) < before) {
@@ -102,8 +104,9 @@ void PrintMatch(uint64_t match_address,
     const uint64_t first_offset = match_offset - before * sizeof(uint64_t);
     const uint64_t last_offset = match_offset + after * sizeof(uint64_t);
     for (uint64_t off = first_offset; off <= last_offset; off += sizeof(uint64_t)) {
-        const uint64_t addr = memory_desc.StartOfMemoryRange + off;
-        const uint64_t value = *reinterpret_cast<const uint64_t*>(memory_data + off);
+        const uint64_t addr = region.base + off;
+        uint64_t value;
+        std::memcpy(&value, region.data + off, sizeof(uint64_t));
         const wchar_t marker = (off == match_offset) ? L'>' : L' ';
         std::wcout << L"  " << marker << L" 0x"
                    << std::hex << std::uppercase << std::setw(16) << std::setfill(L'0')
@@ -195,6 +198,7 @@ int wmain(int argc, wchar_t** argv) {
 
     const std::wstring dumpFilePath = Utf8ToWide(dump_file_utf8);
     MappedView mapped_view(dumpFilePath);
+    DumpMemoryReader dump_memory(mapped_view);
 
     ProgressReporter progress;
 
@@ -219,39 +223,33 @@ int wmain(int argc, wchar_t** argv) {
         progress.clear();
     }
 
-    void* stream = nullptr;
-    ULONG stream_size = 0;
-    THROW_IF_WIN32_BOOL_FALSE(MiniDumpReadDumpStream(
-        mapped_view.get(), Memory64ListStream, nullptr, &stream, &stream_size));
+    const auto& regions = dump_memory.regions();
+    const size_t range_count = regions.size();
 
-    auto memory_list = static_cast<PMINIDUMP_MEMORY64_LIST>(stream);
-    const ULONG64 range_count = memory_list->NumberOfMemoryRanges;
+    uint64_t total_bytes = 0;
+    for (const auto& r : regions) total_bytes += r.captured_bytes;
 
-    ULONG64 total_bytes = 0;
-    for (ULONG64 i = 0; i < range_count; i++) {
-        total_bytes += memory_list->MemoryRanges[i].DataSize;
-    }
-
-    ULONG64 bytes_processed = 0;
-    RVA64 current_rva = memory_list->BaseRva;
+    uint64_t bytes_processed = 0;
     uint64_t matches_seen = 0;
     uint64_t matches_printed = 0;
 
-    for (ULONG64 i = 0; i < range_count; i++) {
-        const MINIDUMP_MEMORY_DESCRIPTOR64& memory_desc = memory_list->MemoryRanges[i];
-        BYTE* memory_data = static_cast<BYTE*>(mapped_view.get()) + current_rva;
-
-        const uint64_t range_start = memory_desc.StartOfMemoryRange;
-        const uint64_t range_end = range_start + memory_desc.DataSize; // exclusive
-
-        // Skip ranges that don't intersect [start_addr, end_addr].
-        if (range_end <= start_addr || range_start > end_addr) {
-            bytes_processed += memory_desc.DataSize;
-            current_rva += memory_desc.DataSize;
+    for (size_t i = 0; i < range_count; ++i) {
+        const auto& region = regions[i];
+        if (region.data == nullptr || region.captured_bytes < sizeof(uint64_t)) {
+            bytes_processed += region.captured_bytes;
             continue;
         }
 
-        const uint64_t aligned_size = memory_desc.DataSize & ~7ULL;
+        const uint64_t range_start = region.base;
+        const uint64_t range_end   = range_start + region.captured_bytes; // exclusive
+
+        // Skip ranges that don't intersect [start_addr, end_addr].
+        if (range_end <= start_addr || range_start > end_addr) {
+            bytes_processed += region.captured_bytes;
+            continue;
+        }
+
+        const uint64_t aligned_size = region.captured_bytes & ~7ULL;
 
         // Compute scan bounds (offsets) intersected with the requested address window.
         uint64_t scan_begin_offset = 0;
@@ -275,11 +273,12 @@ int wmain(int argc, wchar_t** argv) {
         }
 
         for (uint64_t offset = scan_begin_offset; offset + sizeof(uint64_t) <= scan_end_offset; offset += sizeof(uint64_t)) {
-            const uint64_t value = *reinterpret_cast<const uint64_t*>(memory_data + offset);
+            uint64_t value;
+            std::memcpy(&value, region.data + offset, sizeof(uint64_t));
             if (value == target_value) {
                 if (matches_seen >= skip) {
                     progress.clear();
-                    PrintMatch(range_start + offset, target_value, memory_desc, memory_data, context, symbols.get());
+                    PrintMatch(range_start + offset, target_value, region, context, symbols.get());
                     matches_printed++;
                     if (max_results != 0 && matches_printed >= max_results) {
                         return 0;
@@ -303,8 +302,7 @@ int wmain(int argc, wchar_t** argv) {
             }
         }
 
-        bytes_processed += memory_desc.DataSize;
-        current_rva += memory_desc.DataSize;
+        bytes_processed += region.captured_bytes;
     }
 
     progress.clear();

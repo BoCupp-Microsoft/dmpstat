@@ -5,8 +5,8 @@
 #include <string>
 #include <vector>
 
-#include "captured_memory_region.hpp"
 #include "dump_memory.hpp"
+#include "dump_memory_region.hpp"
 
 class SymbolResolver;
 
@@ -14,16 +14,16 @@ namespace dmpstat {
 
 // Symbol-anchored description of the cppgc / Oilpan caged heap and the set of
 // committed regions inside it. Constructed via OilpanHeap::discover() which
-// resolves both globals (g_heap_base_, g_age_table_size_), reads them from the
-// dump, and walks MemoryInfoListStream collecting the cage-intersecting
-// MEM_COMMIT|MEM_PRIVATE regions as CapturedMemoryRegion entries. Tools then
-// feed `regions()` into summary/scanning routines.
+// resolves both globals (g_heap_base_, g_age_table_size_), reads them from
+// the dump, and walks MemoryInfoListStream collecting the cage-intersecting
+// MEM_COMMIT|MEM_PRIVATE regions as DumpMemoryRegion entries. Tools then feed
+// `regions()` into summary/scanning routines (e.g. PointerCounter).
 class OilpanHeap {
 public:
     // Locate the cage and gather its committed regions. Returns std::nullopt
     // on any failure (with a diagnostic written to std::wcerr).
     static std::optional<OilpanHeap> discover(const SymbolResolver& sr,
-                                              const DumpMemoryReader& dm,
+                                              const RandomAccessReader& reader,
                                               void* dump_base,
                                               bool verbose);
 
@@ -39,7 +39,7 @@ public:
     static constexpr uint64_t kCageCardSizeBytes = 4096;
 
     // Committed regions intersecting the cage, in ascending VA order.
-    const std::vector<CapturedMemoryRegion>& regions() const { return regions_; }
+    const std::vector<DumpMemoryRegion>& regions() const { return regions_; }
 
     // Sum of the cage-intersected committed bytes (regions()[i].size, clipped
     // to the cage range during discovery).
@@ -57,7 +57,7 @@ private:
     uint64_t age_table_size_raw_  = 0;
     std::wstring base_symbol_name_;
     std::wstring size_symbol_name_;
-    std::vector<CapturedMemoryRegion> regions_;
+    std::vector<DumpMemoryRegion> regions_;
     uint64_t committed_bytes_       = 0;
     uint64_t total_private_commit_  = 0;
 };

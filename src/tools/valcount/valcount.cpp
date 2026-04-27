@@ -4,6 +4,7 @@
 #include <CLI/CLI.hpp>
 #include <wil/result.h>
 #include <wil/win32_helpers.h>
+#include "dump_memory.hpp"
 #include "mapped_view.hpp"
 #include "pointer_counter.hpp"
 #include "progress.hpp"
@@ -112,10 +113,11 @@ int wmain(int argc, wchar_t** argv) {
 
 
     MappedView mapped_view(dumpFilePath);
+    DumpMemoryReader dump_memory(mapped_view);
 
     ProgressReporter progress;
     SymbolResolver symbol_resolver(mapped_view, sympath, progress, verbose);
-    PointerCounter pointer_counter(mapped_view, progress);
+    PointerCounter pointer_counter(dump_memory.regions(), progress);
     progress.clear();
 
     printTopValues(pointer_counter, symbol_resolver, top_count);

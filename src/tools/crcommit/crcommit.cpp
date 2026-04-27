@@ -139,12 +139,13 @@ int wmain(int argc, wchar_t** argv) {
 
     MappedView mapped_view(dump_path);
     DumpMemoryReader dump_memory(mapped_view);
+    RandomAccessReader reader(dump_memory.regions());
 
     ProgressReporter progress;
     SymbolResolver symbol_resolver(mapped_view, sympath, progress, verbose);
     progress.clear();
 
-    const auto heap = OilpanHeap::discover(symbol_resolver, dump_memory,
+    const auto heap = OilpanHeap::discover(symbol_resolver, reader,
                                            mapped_view.get(), verbose);
     if (!heap) return 1;
 
