@@ -207,8 +207,6 @@ walkOilpanObjects(const OilpanHeap& heap,
     auto layout = discoverPageLayout(sr);
     progress.clear();
     if (!layout) {
-        // Re-resolve with the same calls just to get individual values for
-        // the diagnostic; cheap because findType has its own caching paths.
         const uint64_t snp = sr.typeSize(L"cppgc::internal::NormalPage");
         const uint64_t slp = sr.typeSize(L"cppgc::internal::LargePage");
         const auto bpt = sr.fieldOffset(L"cppgc::internal::BasePage", L"type_");
@@ -219,27 +217,6 @@ walkOilpanObjects(const OilpanHeap& heap,
                    << L"  sizeof(LargePage)                   = " << slp << std::endl
                    << L"  offsetof(BasePage::type_)           = " << (bpt ? *bpt : 0) << std::endl
                    << L"  offsetof(LargePage::payload_size_)  = " << (lpps ? *lpps : 0) << std::endl;
-
-        // Diagnostic probes: try a few alternative spellings to figure out
-        // whether (a) the type is present under a different name or (b) the
-        // type has been stripped from the PDB entirely.
-        auto probe = [&](const std::wstring& name) {
-            const uint64_t sz = sr.typeSize(name);
-            std::wcerr << L"  probe sizeof(" << name << L") = " << sz << std::endl;
-        };
-        probe(L"cppgc::internal::BasePage");
-        probe(L"cppgc::internal::NormalPage");
-        probe(L"cppgc::internal::LargePage");
-        probe(L"cppgc::internal::BasePageHandle");
-
-        auto enumProbe = [&](const std::wstring& mask) {
-            auto names = sr.enumerateTypeNames(mask, 16);
-            std::wcerr << L"  types matching '" << mask << L"' (" << names.size()
-                       << L"):" << std::endl;
-            for (const auto& n : names) std::wcerr << L"    " << n << std::endl;
-        };
-        enumProbe(L"*NormalPage");
-        enumProbe(L"*BasePage");
         return std::nullopt;
     }
 
@@ -315,16 +292,24 @@ std::wstring stripElaboratedTypeKeywords(const std::wstring& s) {
 }
 
 // Extract `X` from a symbol of the form
-// "cppgc::internal::TraceTrait<X>::Trace". Returns empty string on miss.
+// "cppgc::internal::TraceTrait<X>::Trace" or
+// "cppgc::internal::TraceTraitBase<X>::Trace". MSVC emits the trace function
+// at the base-class template (TraceTraitBase) for most cppgc-managed classes,
+// so we have to accept both spellings. Returns empty string on miss.
 std::wstring extractTraceTraitArg(const std::wstring& sym) {
-    static const std::wstring kPrefix = L"cppgc::internal::TraceTrait<";
+    static const std::wstring kPrefixes[] = {
+        L"cppgc::internal::TraceTraitBase<",
+        L"cppgc::internal::TraceTrait<",
+    };
     static const std::wstring kSuffix = L">::Trace";
-    if (sym.size() < kPrefix.size() + kSuffix.size()) return {};
-    if (sym.compare(0, kPrefix.size(), kPrefix) != 0) return {};
-    // The trailing >::Trace is the last occurrence; take everything between.
-    size_t end = sym.rfind(kSuffix);
-    if (end == std::wstring::npos || end <= kPrefix.size()) return {};
-    return sym.substr(kPrefix.size(), end - kPrefix.size());
+    for (const auto& prefix : kPrefixes) {
+        if (sym.size() < prefix.size() + kSuffix.size()) continue;
+        if (sym.compare(0, prefix.size(), prefix) != 0) continue;
+        size_t end = sym.rfind(kSuffix);
+        if (end == std::wstring::npos || end <= prefix.size()) continue;
+        return sym.substr(prefix.size(), end - prefix.size());
+    }
+    return {};
 }
 
 } // namespace
@@ -363,20 +348,49 @@ void resolveClassNames(OilpanObjectStats& stats,
 
     auto array_ptr = reader.read<uint64_t>(*table_ptr + *off_table);
     auto current_index = reader.read<uint16_t>(*table_ptr + *off_index);
+    if (sr.verbose()) {
+        std::wcerr << L"GCInfoTable: global_table_addr=0x" << std::hex << *global_table_addr
+                   << L" table_ptr=0x" << *table_ptr
+                   << L" array_ptr=0x" << (array_ptr ? *array_ptr : 0)
+                   << std::dec
+                   << L" current_index=" << (current_index ? *current_index : 0)
+                   << L" sizeof(GCInfo)=" << sizeof_gcinfo
+                   << L" off_table=" << *off_table
+                   << L" off_index=" << *off_index
+                   << L" off_trace=" << *off_trace
+                   << std::endl;
+    }
     if (!array_ptr || !current_index || *array_ptr == 0) return;
 
     // Resolve only indices we actually saw - dramatically cheaper than
     // walking every entry of a 16K-slot table.
+    size_t n_total = 0, n_oor = 0, n_no_trace = 0, n_no_sym = 0,
+           n_no_match = 0, n_resolved = 0;
+    std::wstring sample_sym;
     for (auto& [idx, entry] : stats.by_gc_info) {
-        if (idx == 0 || idx >= *current_index) continue;
+        ++n_total;
+        if (idx == 0 || idx >= *current_index) { ++n_oor; continue; }
         const uint64_t entry_addr = *array_ptr + idx * sizeof_gcinfo;
         auto trace_fn = reader.read<uint64_t>(entry_addr + *off_trace);
-        if (!trace_fn || *trace_fn == 0) continue;
+        if (!trace_fn || *trace_fn == 0) { ++n_no_trace; continue; }
         auto sym = sr.resolveFunction(*trace_fn);
-        if (!sym) continue;
+        if (!sym) { ++n_no_sym; continue; }
+        if (sample_sym.empty()) sample_sym = sym->symbol_name;
         std::wstring arg = extractTraceTraitArg(sym->symbol_name);
-        if (arg.empty()) continue;
+        if (arg.empty()) { ++n_no_match; continue; }
         entry.class_name = stripElaboratedTypeKeywords(arg);
+        ++n_resolved;
+    }
+    if (sr.verbose()) {
+        std::wcerr << L"GCInfoTable resolution: total=" << n_total
+                   << L" out_of_range=" << n_oor
+                   << L" no_trace=" << n_no_trace
+                   << L" no_sym=" << n_no_sym
+                   << L" no_match=" << n_no_match
+                   << L" resolved=" << n_resolved << std::endl;
+        if (!sample_sym.empty()) {
+            std::wcerr << L"  sample symbol: " << sample_sym << std::endl;
+        }
     }
 }
 

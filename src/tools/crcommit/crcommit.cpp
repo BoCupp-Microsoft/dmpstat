@@ -196,7 +196,52 @@ struct VtableEntry {
     std::wstring class_name;
     uint64_t     count     = 0;  // number of pointers to this vtable found
     uint64_t     type_size = 0;  // bytes per instance per the PDB
+    // Number of sibling v-tables collapsed into this row. >1 indicates the
+    // class has multiple polymorphic bases and MSVC emitted one vftable per
+    // base sub-object; each instance still occupies type_size bytes once.
+    uint32_t     vtable_count = 1;
 };
+
+// Collapse rows that share (module, class). Each instance of a class with
+// multiple polymorphic bases stores one vptr per base sub-object, so the
+// pointer scan reports the same instance count under several adjacent vtable
+// addresses. Summing those rows would double-count the heap footprint, so we
+// keep one canonical row per class: the lowest-address vtable, with
+// count = max sibling count (they normally tie) and a vtable_count tag for
+// visibility.
+std::vector<VtableEntry> collapseSiblingVtables(
+        const std::vector<VtableEntry>& in) {
+    struct Key { std::wstring m; std::wstring c; };
+    auto key_lt = [](const VtableEntry& a, const VtableEntry& b) {
+        if (a.module_name != b.module_name) return a.module_name < b.module_name;
+        if (a.class_name  != b.class_name)  return a.class_name  < b.class_name;
+        return a.vtable_address < b.vtable_address;
+    };
+    std::vector<VtableEntry> sorted = in;
+    std::stable_sort(sorted.begin(), sorted.end(), key_lt);
+
+    std::vector<VtableEntry> out;
+    out.reserve(sorted.size());
+    for (const auto& e : sorted) {
+        if (!out.empty()
+            && out.back().module_name == e.module_name
+            && out.back().class_name  == e.class_name
+            && !e.class_name.empty()) {
+            // Same class as previous: merge. Count should match across
+            // siblings; take max defensively. type_size is identical.
+            auto& dst = out.back();
+            if (e.count > dst.count) dst.count = e.count;
+            if (dst.vtable_address == 0
+                || (e.vtable_address != 0 && e.vtable_address < dst.vtable_address)) {
+                dst.vtable_address = e.vtable_address;
+            }
+            ++dst.vtable_count;
+        } else {
+            out.push_back(e);
+        }
+    }
+    return out;
+}
 
 enum class VtableSort { Size, Count };
 
@@ -253,7 +298,7 @@ void printVtables(const std::vector<VtableEntry>& vtables_in,
                   VtableSort sort,
                   uint64_t heap_committed_bytes,
                   const SymbolResolver& sr) {
-    std::vector<VtableEntry> vtables = vtables_in;
+    std::vector<VtableEntry> vtables = collapseSiblingVtables(vtables_in);
     if (sort == VtableSort::Size) {
         std::stable_sort(vtables.begin(), vtables.end(),
             [](const VtableEntry& a, const VtableEntry& b) {
@@ -311,8 +356,8 @@ void printVtables(const std::vector<VtableEntry>& vtables_in,
             std::wcout << L"    " << n << std::endl;
         }
     }
-    std::wcout << L"  Count       Bytes        Type size  V-table address     Class" << std::endl;
-    std::wcout << L"  ----------  -----------  ---------  ------------------  -----------------------------------"
+    std::wcout << L"  Count       Bytes        Type size  Vt  V-table address     Class" << std::endl;
+    std::wcout << L"  ----------  -----------  ---------  --  ------------------  -----------------------------------"
                << std::endl;
     for (size_t i = 0; i < shown; ++i) {
         const auto& e = vtables[i];
@@ -321,6 +366,7 @@ void printVtables(const std::vector<VtableEntry>& vtables_in,
         line << L"  " << std::left << std::setw(10) << e.count
              << L"  " << std::setw(11) << formatBytes(bytes)
              << L"  " << std::setw(9)  << e.type_size
+             << L"  " << std::setw(2)  << e.vtable_count
              << L"  0x" << std::right << std::hex << std::setw(16)
              << std::setfill(L'0') << e.vtable_address
              << std::dec << std::setfill(L' ') << std::left

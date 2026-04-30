@@ -62,7 +62,7 @@ public:
     // findType: resolve a fully-qualified C++ type name (handles namespaces,
     // including elaborated-type-specifier keywords like `enum`/`class`) to a
     // (module base, type index) pair.
-    struct ResolvedType { uint64_t mod_base = 0; uint32_t type_index = 0; };
+    struct ResolvedType { uint64_t mod_base = 0; uint32_t type_index = 0; uint64_t size = 0; };
     std::optional<ResolvedType> findType(const std::wstring& qualified_name) const;
 
     // Total byte size of `qualified_name` (sizeof in C++ terms). Returns 0 if
@@ -113,6 +113,39 @@ public:
     // (e.g. when struct-layout discovery fails).
     std::vector<std::wstring> enumerateTypeNames(const std::wstring& mask,
                                                  size_t max_results = 50) const;
+
+    // Diagnostic: list direct member fields of `struct_qname` with their
+    // offsets, as reported by TI_FINDCHILDREN + TI_GET_OFFSET. Returns empty
+    // if the type cannot be resolved or has no enumerable children.
+    struct FieldInfo { std::wstring name; uint64_t offset = 0; };
+    std::vector<FieldInfo> enumerateFields(const std::wstring& struct_qname) const;
+
+    // Diagnostic: return TI_GET_SYMTAG / TI_GET_CHILDRENCOUNT / TI_GET_TYPE for
+    // the resolved TypeIndex of `struct_qname`. All zero if the type cannot
+    // be found. SymTag values: 11=UDT, 13=Enum, 17=Typedef, 14=FunctionType.
+    struct TypeProbe {
+        uint32_t type_index = 0;
+        uint32_t sym_tag = 0;
+        uint32_t children = 0;
+        uint32_t base_type_index = 0;
+    };
+    TypeProbe probeType(const std::wstring& struct_qname) const;
+
+    // Diagnostic: walk every loaded module and call SymGetTypeFromNameW for
+    // `qualified_name`. Returns one row per module with success flag plus
+    // recovered TypeIndex/length when available. Used to debug why findType()
+    // fails for known-good types.
+    struct PerModuleTypeProbe {
+        uint64_t      base = 0;
+        uint64_t      image_size = 0;
+        std::wstring  module_name;
+        bool          success = false;
+        uint32_t      type_index = 0;
+        uint64_t      size = 0;
+        uint32_t      last_error = 0;
+    };
+    std::vector<PerModuleTypeProbe>
+    probeTypePerModule(const std::wstring& qualified_name) const;
 
     // Sorted (by base) image range of a loaded module.
     struct ModuleRange { uint64_t base; uint64_t size; };
