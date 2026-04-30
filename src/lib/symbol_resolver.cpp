@@ -51,7 +51,8 @@ void InitializeSymbols(HANDLE sym_handle, const std::wstring& sympath, bool verb
         FALSE));
 }
 
-void LoadModules(const MappedView& mapped_view, HANDLE sym_handle, ProgressReporter& progress, bool verbose) {
+void LoadModules(const MappedView& mapped_view, HANDLE sym_handle, ProgressReporter& progress, bool verbose,
+                 std::vector<SymbolResolver::ModuleRange>* out_module_ranges = nullptr) {
     // Read module list stream
     void* module_stream = nullptr;
     ULONG module_stream_size = 0;
@@ -75,6 +76,10 @@ void LoadModules(const MappedView& mapped_view, HANDLE sym_handle, ProgressRepor
             static_cast<BYTE*>(mapped_view.get()) + module.ModuleNameRva);
 
         std::wstring module_name(module_name_dmp_str->Buffer, module_name_dmp_str->Length / sizeof(wchar_t));
+
+        if (out_module_ranges) {
+            out_module_ranges->push_back({module.BaseOfImage, module.SizeOfImage});
+        }
 
         wchar_t status[512];
         swprintf_s(status, L"Loading symbols %u/%u: %s",
@@ -142,6 +147,13 @@ void LoadModules(const MappedView& mapped_view, HANDLE sym_handle, ProgressRepor
             }
         }
     }
+    if (out_module_ranges) {
+        std::sort(out_module_ranges->begin(), out_module_ranges->end(),
+                  [](const SymbolResolver::ModuleRange& a,
+                     const SymbolResolver::ModuleRange& b) {
+                      return a.base < b.base;
+                  });
+    }
 }
 
 SymbolResolver::SymbolResolver(const MappedView& mapped_view, const std::wstring& sympath, ProgressReporter& progress, bool verbose)
@@ -167,7 +179,7 @@ SymbolResolver::SymbolResolver(const MappedView& mapped_view, const std::wstring
             std::wcerr << L"[dbghelp] Search path: " << resolved << std::endl;
         }
     }
-    LoadModules(mapped_view_, sym_handle_, progress, verbose);
+    LoadModules(mapped_view_, sym_handle_, progress, verbose, &module_ranges_);
 }
 
 SymbolResolver::~SymbolResolver() {
@@ -250,6 +262,139 @@ std::wstring SymbolResolver::resolveSymbol(uint64_t address) const {
     return L"<unknown>";
 }
 
+namespace {
+// MSVC's symbol-name undecorator emits elaborated-type-specifiers (enum,
+// class, struct, union) inside template argument lists, e.g. the vftable
+// symbol decodes as `Foo<enum Bar>::`vftable'`. The same type is stored in
+// the PDB type stream under its canonical name `Foo<Bar>` (no keyword), so
+// SymGetTypeFromNameW fails when handed the keyword form. Strip standalone
+// occurrences of those keywords so that the name matches the type record.
+std::wstring stripElaboratedTypeKeywords(std::wstring s) {
+    static constexpr std::wstring_view kKeywords[] = {
+        L"enum ", L"class ", L"struct ", L"union ",
+    };
+    auto isIdent = [](wchar_t c) {
+        return iswalnum(c) || c == L'_';
+    };
+    for (auto kw : kKeywords) {
+        size_t pos = 0;
+        while ((pos = s.find(kw, pos)) != std::wstring::npos) {
+            // Skip if the keyword is actually a suffix of an identifier
+            // (e.g. "myenum ").
+            if (pos > 0 && isIdent(s[pos - 1])) {
+                pos += kw.size();
+                continue;
+            }
+            s.erase(pos, kw.size());
+        }
+    }
+    return s;
+}
+} // namespace
+
+std::optional<SymbolResolver::VtableInfo>
+SymbolResolver::resolveVtable(uint64_t address) const {
+    BYTE symbol_buffer[sizeof(SYMBOL_INFOW) + MAX_SYM_NAME * sizeof(WCHAR)];
+    PSYMBOL_INFOW symbol_info = reinterpret_cast<PSYMBOL_INFOW>(symbol_buffer);
+    symbol_info->SizeOfStruct = sizeof(SYMBOL_INFOW);
+    symbol_info->MaxNameLen = MAX_SYM_NAME;
+
+    DWORD64 displacement = 0;
+    if (!SymFromAddrW(sym_handle_, address, &displacement, symbol_info)) {
+        return std::nullopt;
+    }
+    // Only count exact vtable starts.
+    if (displacement != 0) return std::nullopt;
+
+    std::wstring name(symbol_info->Name, symbol_info->NameLen);
+    constexpr std::wstring_view kSuffix = L"::`vftable'";
+    if (name.size() < kSuffix.size()) return std::nullopt;
+    if (name.compare(name.size() - kSuffix.size(),
+                     kSuffix.size(), kSuffix) != 0) return std::nullopt;
+
+    VtableInfo info;
+    info.vtable_address = symbol_info->Address;
+    info.class_name = stripElaboratedTypeKeywords(
+        name.substr(0, name.size() - kSuffix.size()));
+    info.type_size  = 0;
+
+    // Module name (e.g. "msedge") helps disambiguate when the same class is
+    // statically linked into multiple binaries in the dump.
+    IMAGEHLP_MODULEW64 mod{};
+    mod.SizeOfStruct = sizeof(mod);
+    bool has_type_info = false;
+    if (SymGetModuleInfoW64(sym_handle_, symbol_info->ModBase, &mod)) {
+        info.module_name = mod.ModuleName;
+        has_type_info = mod.TypeInfo != FALSE;
+    }
+
+    // Cache lookup: classes commonly have multiple vftables in the same
+    // module (incomplete COMDAT folding, MI subobjects, etc.) so we may
+    // ask for the same (module, class) sizeof many times.
+    const VtableSizeKey cache_key{symbol_info->ModBase, info.class_name};
+    if (auto it = vtable_size_cache_.find(cache_key);
+        it != vtable_size_cache_.end()) {
+        info.type_size = it->second;
+        return info;
+    }
+
+    // Preferred path: the vftable symbol's TypeIndex is an array-of-pointers
+    // whose class parent is the owning class. TI_GET_LENGTH on that class
+    // type gives sizeof(Class). One walk per hit, no name-based search.
+    if (symbol_info->TypeIndex != 0) {
+        DWORD class_ti = 0;
+        if (SymGetTypeInfo(sym_handle_, symbol_info->ModBase,
+                           symbol_info->TypeIndex,
+                           TI_GET_CLASSPARENTID, &class_ti) && class_ti != 0) {
+            ULONG64 len = 0;
+            if (SymGetTypeInfo(sym_handle_, symbol_info->ModBase, class_ti,
+                               TI_GET_LENGTH, &len)) {
+                info.type_size = len;
+            }
+        }
+    }
+
+    // Fallback: look the class type up by name. SymGetTypeFromNameW handles
+    // namespace-qualified names in modern dbghelp builds. We deliberately do
+    // NOT fall back to SymEnumTypesByNameW: that path is O(types-in-module)
+    // and on large PDBs (msedge) blocks for many seconds per miss, which
+    // dominates wall-clock for the v-table phase.
+    if (info.type_size == 0) {
+        BYTE type_buf[sizeof(SYMBOL_INFOW) + MAX_SYM_NAME * sizeof(WCHAR)] = {};
+        auto* type_info = reinterpret_cast<PSYMBOL_INFOW>(type_buf);
+        type_info->SizeOfStruct = sizeof(SYMBOL_INFOW);
+        type_info->MaxNameLen = MAX_SYM_NAME;
+        if (SymGetTypeFromNameW(sym_handle_, symbol_info->ModBase,
+                                info.class_name.c_str(), type_info)) {
+            info.type_size = type_info->Size;
+        }
+    }
+    if (info.type_size == 0) {
+        std::wstring qualified = info.module_name.empty()
+            ? info.class_name
+            : info.module_name + L"!" + info.class_name;
+        unresolved_vtable_classes_.insert(std::move(qualified));
+        if (verbose_) {
+            std::wcerr << L"[symres] no type info for '" << info.class_name
+                       << L"' in " << info.module_name
+                       << L" (TypeInfo=" << (has_type_info ? L"yes" : L"no")
+                       << L", SymType=" << mod.SymType << L")"
+                       << std::endl;
+        }
+    }
+    vtable_size_cache_.emplace(cache_key, info.type_size);
+    return info;
+}
+
+SymbolResolver::VtableResolutionStats
+SymbolResolver::vtable_resolution_stats() const {
+    VtableResolutionStats s{};
+    for (const auto& [_, size] : vtable_size_cache_) {
+        if (size == 0) ++s.unresolved; else ++s.resolved;
+    }
+    return s;
+}
+
 std::optional<uint64_t> SymbolResolver::findGlobal(const std::wstring& name) const {
     BYTE buf[sizeof(SYMBOL_INFOW) + MAX_SYM_NAME * sizeof(WCHAR)] = {};
     auto* info = reinterpret_cast<PSYMBOL_INFOW>(buf);
@@ -281,4 +426,186 @@ SymbolResolver::findGlobalsMatching(const std::wstring& mask, size_t max_results
     // BaseOfDll = 0 means "search all loaded modules".
     SymEnumSymbolsW(sym_handle_, 0, mask.c_str(), SymEnumGlobalsCb, &ctx);
     return hits;
+}
+
+namespace {
+struct FindTypeCtx {
+    uint64_t mod_base;
+    uint32_t type_index;
+    uint64_t size;
+    bool     found;
+};
+BOOL CALLBACK FindTypeCb(PSYMBOL_INFOW info, ULONG /*size*/, PVOID user) {
+    auto* ctx = static_cast<FindTypeCtx*>(user);
+    // SymEnumTypesByNameW already filtered by the qualified name we passed
+    // as the mask. The Name it hands back is often just the unqualified leaf
+    // (e.g. "NormalPage" for "cppgc::internal::NormalPage"), so don't try to
+    // re-validate by string equality - any callback invocation IS the match.
+    ctx->mod_base   = info->ModBase;
+    ctx->type_index = info->TypeIndex;
+    ctx->size       = info->Size;
+    ctx->found      = true;
+    return FALSE;
+}
+
+struct EnumModulesCtx {
+    HANDLE sym_handle;
+    const std::wstring* want;
+    SymbolResolver::ResolvedType result;
+    bool found;
+};
+BOOL CALLBACK EnumModulesCb(PCWSTR /*module_name*/, DWORD64 base, PVOID user) {
+    auto* ctx = static_cast<EnumModulesCtx*>(user);
+    BYTE buf[sizeof(SYMBOL_INFOW) + MAX_SYM_NAME * sizeof(WCHAR)] = {};
+    auto* info = reinterpret_cast<PSYMBOL_INFOW>(buf);
+    info->SizeOfStruct = sizeof(SYMBOL_INFOW);
+    info->MaxNameLen = MAX_SYM_NAME;
+    if (SymGetTypeFromNameW(ctx->sym_handle, base, ctx->want->c_str(), info)
+        && info->TypeIndex != 0) {
+        ctx->result = {info->ModBase, info->TypeIndex};
+        ctx->found = true;
+        return FALSE;
+    }
+    return TRUE;
+}
+} // namespace
+
+std::optional<SymbolResolver::ResolvedType>
+SymbolResolver::findType(const std::wstring& qualified_name) const {
+    // Fast path: process-wide search.
+    BYTE buf[sizeof(SYMBOL_INFOW) + MAX_SYM_NAME * sizeof(WCHAR)] = {};
+    auto* info = reinterpret_cast<PSYMBOL_INFOW>(buf);
+    info->SizeOfStruct = sizeof(SYMBOL_INFOW);
+    info->MaxNameLen = MAX_SYM_NAME;
+    if (SymGetTypeFromNameW(sym_handle_, 0, qualified_name.c_str(), info)
+        && info->TypeIndex != 0) {
+        return ResolvedType{info->ModBase, info->TypeIndex};
+    }
+    // dbghelp's BaseOfDll=0 path doesn't always find namespace-qualified C++
+    // types (especially deeply nested ones in third-party modules). Fall back
+    // to per-module SymGetTypeFromNameW; this succeeds where the global
+    // search silently returns 0.
+    EnumModulesCtx mod_ctx{sym_handle_, &qualified_name, {}, false};
+    SymEnumerateModulesW64(sym_handle_, EnumModulesCb, &mod_ctx);
+    if (mod_ctx.found) return mod_ctx.result;
+
+    // Last-resort: enumerate types by name across all modules.
+    FindTypeCtx ctx{0, 0, 0, false};
+    SymEnumTypesByNameW(sym_handle_, 0, qualified_name.c_str(), FindTypeCb, &ctx);
+    if (ctx.found) return ResolvedType{ctx.mod_base, ctx.type_index};
+    return std::nullopt;
+}
+
+uint64_t SymbolResolver::typeSize(const std::wstring& qualified_name) const {
+    auto t = findType(qualified_name);
+    if (!t) return 0;
+    ULONG64 len = 0;
+    if (SymGetTypeInfo(sym_handle_, t->mod_base, t->type_index,
+                       TI_GET_LENGTH, &len)) {
+        return len;
+    }
+    return 0;
+}
+
+std::optional<uint64_t>
+SymbolResolver::fieldOffset(const std::wstring& struct_qname,
+                            const std::wstring& field) const {
+    auto t = findType(struct_qname);
+    if (!t) return std::nullopt;
+
+    // Two-step TI_FINDCHILDREN: first ask for the count, then allocate and
+    // fill the index array.
+    DWORD child_count = 0;
+    if (!SymGetTypeInfo(sym_handle_, t->mod_base, t->type_index,
+                        TI_GET_CHILDRENCOUNT, &child_count)
+        || child_count == 0) {
+        return std::nullopt;
+    }
+    std::vector<BYTE> blob(sizeof(TI_FINDCHILDREN_PARAMS) +
+                           sizeof(ULONG) * child_count);
+    auto* params = reinterpret_cast<TI_FINDCHILDREN_PARAMS*>(blob.data());
+    params->Count = child_count;
+    params->Start = 0;
+    if (!SymGetTypeInfo(sym_handle_, t->mod_base, t->type_index,
+                        TI_FINDCHILDREN, params)) {
+        return std::nullopt;
+    }
+
+    // Walk children looking for a data member matching `field`. We only honor
+    // direct (non-base-class) members; base-class fields show up via their own
+    // type's children, not as named children of the derived type. This matches
+    // C++ static layout where each derived class introduces only its own
+    // members at the offset reported by TI_GET_OFFSET (0 == start of the
+    // derived sub-object).
+    for (ULONG i = 0; i < child_count; ++i) {
+        ULONG child_id = params->ChildId[i];
+        WCHAR* name_ptr = nullptr;
+        if (!SymGetTypeInfo(sym_handle_, t->mod_base, child_id,
+                            TI_GET_SYMNAME, &name_ptr) || !name_ptr) {
+            continue;
+        }
+        std::wstring name(name_ptr);
+        LocalFree(name_ptr);
+        if (name != field) continue;
+        DWORD off = 0;
+        if (SymGetTypeInfo(sym_handle_, t->mod_base, child_id,
+                           TI_GET_OFFSET, &off)) {
+            return static_cast<uint64_t>(off);
+        }
+    }
+    return std::nullopt;
+}
+
+std::optional<SymbolResolver::FunctionSymbol>
+SymbolResolver::resolveFunction(uint64_t address) const {
+    BYTE buf[sizeof(SYMBOL_INFOW) + MAX_SYM_NAME * sizeof(WCHAR)] = {};
+    auto* info = reinterpret_cast<PSYMBOL_INFOW>(buf);
+    info->SizeOfStruct = sizeof(SYMBOL_INFOW);
+    info->MaxNameLen = MAX_SYM_NAME;
+    DWORD64 disp = 0;
+    if (!SymFromAddrW(sym_handle_, address, &disp, info) || disp != 0) {
+        return std::nullopt;
+    }
+    FunctionSymbol fs;
+    fs.symbol_name.assign(info->Name, info->NameLen);
+    IMAGEHLP_MODULEW64 mod{};
+    mod.SizeOfStruct = sizeof(mod);
+    if (SymGetModuleInfoW64(sym_handle_, info->ModBase, &mod)) {
+        fs.module_name = mod.ModuleName;
+    }
+    return fs;
+}
+
+bool SymbolResolver::isAddressInLoadedModule(uint64_t address) const {
+    if (module_ranges_.empty()) return false;
+    auto it = std::upper_bound(module_ranges_.begin(), module_ranges_.end(),
+                               address,
+                               [](uint64_t v, const ModuleRange& r) {
+                                   return v < r.base;
+                               });
+    if (it == module_ranges_.begin()) return false;
+    --it;
+    return address < it->base + it->size;
+}
+
+namespace {
+struct EnumTypesCtx {
+    std::vector<std::wstring>* out;
+    size_t                     max_results;
+};
+BOOL CALLBACK EnumTypesCb(PSYMBOL_INFOW info, ULONG /*size*/, PVOID user) {
+    auto* ctx = static_cast<EnumTypesCtx*>(user);
+    ctx->out->emplace_back(info->Name, info->NameLen);
+    if (ctx->max_results && ctx->out->size() >= ctx->max_results) return FALSE;
+    return TRUE;
+}
+} // namespace
+
+std::vector<std::wstring>
+SymbolResolver::enumerateTypeNames(const std::wstring& mask,
+                                   size_t max_results) const {
+    std::vector<std::wstring> out;
+    EnumTypesCtx ctx{&out, max_results};
+    SymEnumTypesByNameW(sym_handle_, 0, mask.c_str(), EnumTypesCb, &ctx);
+    return out;
 }

@@ -5,6 +5,8 @@ add_library(dmpstat_lib STATIC
     dump_memory_region.hpp
     mapped_view.cpp
     mapped_view.hpp
+    pointer_counter.cpp
+    pointer_counter.hpp
     progress.cpp
     progress.hpp
     symbol_resolver.cpp
