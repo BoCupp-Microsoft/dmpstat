@@ -26,7 +26,9 @@
 #include "oilpan_objects.hpp"
 #include "pointer_counter.hpp"
 #include "progress.hpp"
+#include "string_scanner.hpp"
 #include "symbol_resolver.hpp"
+#include "v8_heap.hpp"
 #include "wide_string_utils.hpp"
 
 namespace {
@@ -34,7 +36,9 @@ namespace {
 using dmpstat::OilpanHeap;
 using dmpstat::OilpanObjectStats;
 using dmpstat::OilpanClassEntry;
+using dmpstat::StringScanStats;
 using dmpstat::Utf8ToWide;
+using dmpstat::V8Heap;
 using dmpstat::WideToUtf8;
 
 // Pretty-print bytes as "X.YY MiB" / "X.YY GiB". Mirrors the segments tool's
@@ -82,83 +86,79 @@ void printSummary(const OilpanHeap& heap) {
     }
 }
 
-// Aggregate statistics for printable byte sequences found inside the cage.
-struct StringStats {
-    uint64_t ascii_count    = 0;
-    uint64_t ascii_bytes    = 0;
-    uint64_t utf16_count    = 0;
-    uint64_t utf16_bytes    = 0;
-};
+void printV8Summary(const V8Heap& v8) {
+    std::wcout << std::endl;
+    std::wcout << L"V8 isolate group" << std::endl;
+    std::wcout << L"  IsolateGroup:   0x" << std::hex << std::setw(16)
+               << std::setfill(L'0') << v8.isolate_group_address()
+               << std::dec << std::setfill(L' ') << std::endl;
+    std::wcout << L"  cage struct:    0x" << std::hex << std::setw(16)
+               << std::setfill(L'0') << v8.cage_struct_address()
+               << std::dec << std::setfill(L' ')
+               << L"  (v8::internal::VirtualMemoryCage)" << std::endl;
+    std::wcout << L"  cage base:      0x" << std::hex << std::setw(16)
+               << std::setfill(L'0') << v8.cage_base()
+               << std::dec << std::setfill(L' ') << std::endl;
+    std::wcout << L"  reserved size:  " << formatBytes(v8.cage_reserved_size())
+               << L"  (" << v8.cage_reserved_size() << L" B)" << std::endl;
 
-// Heuristic string scan over the Oilpan cage. We don't need symbols here -
-// we just look for runs of printable bytes (ASCII / UTF-16LE) of at least
-// `min_chars` characters. UTF-16 strings escape the ASCII pass because each
-// printable char is followed by 0x00 (not in the printable set), so the two
-// counts don't overlap on real string data.
-StringStats scanStrings(const OilpanHeap& heap,
-                        ProgressReporter& progress,
-                        size_t min_chars) {
-    auto isPrintableAscii = [](uint8_t b) {
-        return b >= 0x20 && b <= 0x7E;
-    };
-
-    StringStats stats{};
-    const auto& regions = heap.regions();
-    for (size_t r = 0; r < regions.size(); ++r) {
-        const auto& reg = regions[r];
-        if (!reg.data || reg.captured_bytes == 0) continue;
-
-        wchar_t buf[96];
-        swprintf_s(buf, L"Scanning strings %zu/%zu", r + 1, regions.size());
-        progress.update(buf);
-
-        const uint8_t* p = reg.data;
-        const uint64_t n = reg.captured_bytes;
-
-        // ASCII pass.
-        uint64_t i = 0;
-        while (i < n) {
-            if (isPrintableAscii(p[i])) {
-                uint64_t j = i;
-                while (j < n && isPrintableAscii(p[j])) ++j;
-                const uint64_t run = j - i;
-                if (run >= min_chars) {
-                    ++stats.ascii_count;
-                    stats.ascii_bytes += run;
-                }
-                i = j;
-            } else {
-                ++i;
-            }
-        }
-
-        // UTF-16LE pass over even-aligned 2-byte units. A "char" is a pair
-        // (lo, 0x00) where lo is printable ASCII; this reliably catches the
-        // common case (blink/WTF stores Latin-1/BMP strings two bytes wide)
-        // without false-matching other binary content.
-        i = 0;
-        while (i + 1 < n) {
-            if (p[i + 1] == 0 && isPrintableAscii(p[i])) {
-                uint64_t j = i;
-                while (j + 1 < n && p[j + 1] == 0 && isPrintableAscii(p[j])) {
-                    j += 2;
-                }
-                const uint64_t chars = (j - i) / 2;
-                if (chars >= min_chars) {
-                    ++stats.utf16_count;
-                    stats.utf16_bytes += chars * 2;
-                }
-                i = j;
-            } else {
-                i += 2;
-            }
-        }
+    std::wcout << std::endl;
+    std::wcout << L"V8 committed memory in pointer-compression cage" << std::endl;
+    std::wcout << L"  bytes:          " << formatBytes(v8.committed_bytes())
+               << L"  (" << v8.committed_bytes() << L" B)" << std::endl;
+    std::wcout << L"  regions:        " << v8.regions().size() << std::endl;
+    if (v8.total_private_commit() > 0) {
+        const double pct = 100.0 * static_cast<double>(v8.committed_bytes())
+                                  / static_cast<double>(v8.total_private_commit());
+        std::wcout << L"  share of priv:  " << std::fixed << std::setprecision(2)
+                   << pct << L"%  of " << formatBytes(v8.total_private_commit())
+                   << L" private commit" << std::endl;
     }
-    progress.clear();
-    return stats;
+
+    std::wcout << std::endl;
+    std::wcout << L"V8 isolates (" << v8.isolates().size() << L" found)"
+               << std::endl;
+    for (const auto& iso : v8.isolates()) {
+        // Derive an isolate "type" from the owning thread's name. These are
+        // the standard Chromium/Blink thread-name prefixes for things that
+        // host a V8 isolate.
+        std::wstring type;
+        if (iso.address == v8.main_isolate()) {
+            type = L"Main";
+        } else if (iso.address == v8.shared_space_isolate()) {
+            type = L"SharedSpace";
+        } else if (iso.thread_name.find(L"DedicatedWorker") != std::wstring::npos) {
+            type = L"DedicatedWorker";
+        } else if (iso.thread_name.find(L"SharedWorker")    != std::wstring::npos) {
+            type = L"SharedWorker";
+        } else if (iso.thread_name.find(L"ServiceWorker")   != std::wstring::npos) {
+            type = L"ServiceWorker";
+        } else if (iso.thread_name.find(L"CrRendererMain")  != std::wstring::npos) {
+            type = L"Main";
+        } else {
+            type = L"Unknown";
+        }
+
+        std::wcout << L"  0x" << std::hex << std::setw(16) << std::setfill(L'0')
+                   << iso.address << std::dec << std::setfill(L' ')
+                   << L"  " << std::left << std::setw(15) << type
+                   << std::right;
+        if (iso.thread_id != 0) {
+            std::wcout << L"  tid=" << iso.thread_id;
+            if (!iso.thread_name.empty()) {
+                std::wcout << L" \"" << iso.thread_name << L"\"";
+            }
+        } else {
+            std::wcout << L"  <no owning thread found>";
+        }
+        std::wcout << std::endl;
+    }
 }
 
-void printStrings(const StringStats& s,
+// Aggregate statistics for printable byte sequences are now produced by
+// dmpstat::scanPrintableStrings(); this tool just renders them.
+
+void printStrings(const StringScanStats& s,
                   size_t min_chars,
                   uint64_t heap_committed_bytes) {
     const uint64_t total_bytes = s.ascii_bytes + s.utf16_bytes;
@@ -503,6 +503,8 @@ int wmain(int argc, wchar_t** argv) {
     bool     no_strings = false;
     bool     no_pages = false;
     bool     no_classes = false;
+    std::string oilpan_mode_utf8;
+    std::string v8_mode_utf8;
     bool     verbose = false;
     uint64_t top     = 25;
     uint64_t min_string_length = 8;
@@ -528,6 +530,14 @@ int wmain(int argc, wchar_t** argv) {
         "Skip the cppgc page classification + HeapObjectHeader walk.");
     app.add_flag("--no-classes", no_classes,
         "Skip GCInfoIndex -> class name resolution (still walks objects).");
+    app.add_option("--oilpan", oilpan_mode_utf8,
+        "Oilpan analysis selector: 'skip' or 'only'. If any heap is "
+        "given 'only', just those run; otherwise 'skip' suppresses this "
+        "heap. Default: enabled.")
+        ->check(CLI::IsMember({"skip", "only"}));
+    app.add_option("--v8", v8_mode_utf8,
+        "V8 analysis selector: 'skip' or 'only'. See --oilpan.")
+        ->check(CLI::IsMember({"skip", "only"}));
     app.add_option("--min-string-length", min_string_length,
         "Minimum character count for a printable run to count as a string.")
         ->capture_default_str();
@@ -545,6 +555,16 @@ int wmain(int argc, wchar_t** argv) {
     }
 
     const std::wstring dump_path = Utf8ToWide(dump_file_utf8);
+
+    // Resolve heap-selection modes. If any heap is set to 'only', only the
+    // heaps with 'only' run. Otherwise heaps marked 'skip' are suppressed.
+    const bool oilpan_only = (oilpan_mode_utf8 == "only");
+    const bool v8_only     = (v8_mode_utf8     == "only");
+    const bool oilpan_skip = (oilpan_mode_utf8 == "skip");
+    const bool v8_skip     = (v8_mode_utf8     == "skip");
+    const bool any_only    = oilpan_only || v8_only;
+    const bool run_oilpan  = any_only ? oilpan_only : !oilpan_skip;
+    const bool run_v8      = any_only ? v8_only     : !v8_skip;
 
     std::wstring sympath;
     if (!sympath_utf8.empty()) {
@@ -567,38 +587,49 @@ int wmain(int argc, wchar_t** argv) {
     SymbolResolver symbol_resolver(mapped_view, sympath, progress, verbose);
     progress.clear();
 
-    const auto heap = OilpanHeap::discover(symbol_resolver, reader,
-                                           mapped_view.get(), verbose);
-    if (!heap) return 1;
+    if (run_oilpan) {
+        const auto heap = OilpanHeap::discover(symbol_resolver, reader,
+                                               mapped_view.get(), verbose);
+        if (!heap) return 1;
 
-    printSummary(*heap);
+        printSummary(*heap);
 
-    if (!summary) {
-        if (!no_strings) {
-            const auto strings = scanStrings(*heap, progress,
-                                             static_cast<size_t>(min_string_length));
-            printStrings(strings, static_cast<size_t>(min_string_length),
-                         heap->committed_bytes());
-        }
-        const VtableSort sort = (sort_utf8 == "count") ? VtableSort::Count
-                                                       : VtableSort::Size;
-        if (!no_pages) {
-            auto stats = dmpstat::walkOilpanObjects(*heap, reader,
-                                                    symbol_resolver, progress);
-            if (stats) {
-                if (!no_classes) {
-                    progress.update(L"Resolving cppgc class names");
-                    dmpstat::resolveClassNames(*stats, reader, symbol_resolver);
-                    progress.clear();
-                }
-                printOilpanPages(*stats, heap->committed_bytes());
-                printOilpanClasses(*stats, static_cast<size_t>(top), sort,
-                                   heap->committed_bytes());
+        if (!summary) {
+            if (!no_strings) {
+                const auto strings = dmpstat::scanPrintableStrings(
+                    heap->regions(), progress, L"Scanning Oilpan strings",
+                    static_cast<size_t>(min_string_length));
+                printStrings(strings, static_cast<size_t>(min_string_length),
+                             heap->committed_bytes());
             }
+            const VtableSort sort = (sort_utf8 == "count") ? VtableSort::Count
+                                                           : VtableSort::Size;
+            if (!no_pages) {
+                auto stats = dmpstat::walkOilpanObjects(*heap, reader,
+                                                        symbol_resolver, progress);
+                if (stats) {
+                    if (!no_classes) {
+                        progress.update(L"Resolving cppgc class names");
+                        dmpstat::resolveClassNames(*stats, reader, symbol_resolver);
+                        progress.clear();
+                    }
+                    printOilpanPages(*stats, heap->committed_bytes());
+                    printOilpanClasses(*stats, static_cast<size_t>(top), sort,
+                                       heap->committed_bytes());
+                }
+            }
+            const auto vtables = collectVtables(*heap, symbol_resolver, progress);
+            printVtables(vtables, static_cast<size_t>(top), sort,
+                         heap->committed_bytes(), symbol_resolver);
         }
-        const auto vtables = collectVtables(*heap, symbol_resolver, progress);
-        printVtables(vtables, static_cast<size_t>(top), sort,
-                     heap->committed_bytes(), symbol_resolver);
+    }
+
+    if (run_v8) {
+        const auto v8 = V8Heap::discover(symbol_resolver, reader,
+                                         mapped_view.get(), verbose);
+        if (v8) {
+            printV8Summary(*v8);
+        }
     }
     return 0;
 }

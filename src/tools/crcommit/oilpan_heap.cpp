@@ -1,12 +1,11 @@
 #include "oilpan_heap.hpp"
 
-#include <windows.h>
-#include <dbghelp.h>
-
 #include <algorithm>
 #include <iostream>
 #include <iomanip>
 
+#include "committed_regions.hpp"
+#include "read_global.hpp"
 #include "symbol_resolver.hpp"
 
 namespace dmpstat {
@@ -60,7 +59,7 @@ std::optional<OilpanHeap> OilpanHeap::discover(const SymbolResolver& sr,
                                                bool verbose) {
     OilpanHeap h{};
 
-    // 1. Resolve symbols.
+    // 1. Resolve symbols (with cppgc-specific fallback wildcards).
     const auto base_global = resolveCppgcGlobal(
         sr,
         L"cppgc::internal::CagedHeapBase::g_heap_base_",
@@ -134,67 +133,15 @@ std::optional<OilpanHeap> OilpanHeap::discover(const SymbolResolver& sr,
                       L"readings may be wrong." << std::endl;
     }
 
-    // 3. Walk MemoryInfoListStream and collect cage-intersecting committed
-    //    private regions.
-    void* stream = nullptr;
-    ULONG stream_size = 0;
-    if (!MiniDumpReadDumpStream(dump_base, MemoryInfoListStream, nullptr,
-                                &stream, &stream_size)
-        || stream == nullptr) {
-        std::wcerr << L"Error: dump does not contain a MemoryInfoListStream."
-                   << std::endl;
-        return std::nullopt;
-    }
-    auto* header = static_cast<MINIDUMP_MEMORY_INFO_LIST*>(stream);
-    if (header->SizeOfEntry < sizeof(MINIDUMP_MEMORY_INFO)) {
-        std::wcerr << L"Error: unexpected MINIDUMP_MEMORY_INFO entry size: "
-                   << header->SizeOfEntry << std::endl;
-        return std::nullopt;
-    }
-
-    // cage_reserved_size_ is power-of-two and at most 16 GiB, and cage_base_
-    // is aligned to it, so cage_end cannot wrap.
-    const uint64_t cage_end = h.cage_base_ + h.cage_reserved_size_;
-    const BYTE* base = static_cast<const BYTE*>(stream) + header->SizeOfHeader;
-
-    for (ULONG64 i = 0; i < header->NumberOfEntries; ++i) {
-        const auto* info = reinterpret_cast<const MINIDUMP_MEMORY_INFO*>(
-            base + i * header->SizeOfEntry);
-
-        if (info->State != MEM_COMMIT) continue;
-        if (info->Type  != MEM_PRIVATE) continue;
-
-        h.total_private_commit_ += info->RegionSize;
-
-        const uint64_t r_start = info->BaseAddress;
-        const uint64_t r_end   = r_start + info->RegionSize;
-        const uint64_t lo = std::max(r_start, h.cage_base_);
-        const uint64_t hi = std::min(r_end,   cage_end);
-        if (lo >= hi) continue;
-
-        DumpMemoryRegion region{};
-        region.base = lo;
-        region.size = hi - lo;
-
-        const auto span = reader.captured_at(lo);
-        region.data = span.data;
-        region.captured_bytes = std::min<uint64_t>(region.size, span.size);
-
-        if (verbose) {
-            std::wcerr << L"[oilpan]  region 0x" << std::hex << region.base
-                       << L"..0x" << (region.base + region.size) << std::dec
-                       << L" size=" << region.size
-                       << L" captured=" << region.captured_bytes << std::endl;
-        }
-
-        h.committed_bytes_ += region.size;
-        h.regions_.push_back(region);
-    }
-
-    std::sort(h.regions_.begin(), h.regions_.end(),
-              [](const DumpMemoryRegion& a, const DumpMemoryRegion& b) {
-                  return a.base < b.base;
-              });
+    // 3. Walk MemoryInfoListStream and capture cage-intersecting committed
+    //    private regions via the shared lib helper.
+    auto cr = readCommittedRegionsInRange(reader, dump_base,
+                                          h.cage_base_, h.cage_reserved_size_,
+                                          verbose, L"oilpan");
+    if (!cr) return std::nullopt;
+    h.regions_              = std::move(cr->regions);
+    h.committed_bytes_      = cr->committed_bytes;
+    h.total_private_commit_ = cr->total_private_commit;
 
     return h;
 }

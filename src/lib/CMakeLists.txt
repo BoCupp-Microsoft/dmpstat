@@ -1,5 +1,7 @@
 # dmpstat_lib: common code shared across tools.
 add_library(dmpstat_lib STATIC
+    committed_regions.cpp
+    committed_regions.hpp
     dump_memory.cpp
     dump_memory.hpp
     dump_memory_region.hpp
@@ -9,8 +11,13 @@ add_library(dmpstat_lib STATIC
     pointer_counter.hpp
     progress.cpp
     progress.hpp
+    read_global.hpp
+    string_scanner.cpp
+    string_scanner.hpp
     symbol_resolver.cpp
     symbol_resolver.hpp
+    threads.cpp
+    threads.hpp
     wide_string_utils.cpp
     wide_string_utils.hpp
 )

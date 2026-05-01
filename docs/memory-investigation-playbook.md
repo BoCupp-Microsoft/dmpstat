@@ -68,3 +68,33 @@ rounding)` line of the Oilpan objects section.
   allocation-shape perspective.
 - A few percent is normal. A large share suggests many partially-filled
   pages — a fragmentation signal worth investigating.
+
+## V8 isolates
+
+### Per-isolate OS thread (Win32 tid)
+
+`v8::internal::Isolate` does not store a Win32 thread id anywhere — its
+internal `thread_id_` field is V8's monotonic `ThreadId` counter, useful
+only inside V8. To recover the OS tid that owns each isolate, locate
+V8's `g_current_isolate_` `thread_local` variable and read it on every
+captured thread.
+
+- Each thread's TEB at `+0x58` holds `ThreadLocalStoragePointer`, an
+  array of pointers to per-module static-TLS blocks.
+- Score every (slot index, byte offset) candidate by the number of
+  distinct threads whose value at that location is a known isolate
+  pointer; invalidate any candidate where two threads point to the same
+  isolate (a true `thread_local` is per-thread, never shared).
+- The highest-scoring valid candidate is V8's `g_current_isolate_`.
+  Reading one qword per thread there yields the OS tid that owns each
+  isolate.
+- Cross-reference the tid with `MINIDUMP_THREAD_NAMES_STREAM` to derive
+  the isolate type from Chromium's standard thread-name prefixes:
+  `CrRendererMain` → Main, `DedicatedWorker thread` → DedicatedWorker,
+  `SharedWorker thread` → SharedWorker, `ServiceWorker thread` →
+  ServiceWorker.
+- A naive "first qword in any TLS block matching an isolate" scan is
+  unreliable: Chromium keeps a process-wide registry of isolates inside
+  one thread's TLS (often the Compositor thread), so a single thread
+  can appear to own every isolate.
+
